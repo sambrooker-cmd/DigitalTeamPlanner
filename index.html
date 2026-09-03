@@ -403,8 +403,8 @@ function PromotionPlanner() {
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
   const [taskModal, setTaskModal] = useState(false);
-  const [promoModalOpen, setPromoModalOpen] = useState(false);
-  const [newPromo, setNewPromo] = useState({ name: '', launchDate: '', description: '' });
+  const [promoModal, setPromoModal] = useState(false);
+  const [promoForm, setPromoForm] = useState(null);
   const [taskForm, setTaskForm] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -441,6 +441,20 @@ function PromotionPlanner() {
     try {
       const ref = await addDoc(collection(fdb, 'promotions'), data);
       return ref.id;
+    } finally { setBusy(false); }
+  }
+
+  async function saveExistingPromotion(promoId, data) {
+    setBusy(true);
+    try { await setDoc(doc(fdb, 'promotions', promoId), data); } finally { setBusy(false); }
+  }
+
+  async function deletePromotion(promoId) {
+    setBusy(true);
+    try {
+      const tasksSnap = await getDocs(collection(fdb, 'promotions', promoId, 'tasks'));
+      for (const t of tasksSnap.docs) await deleteDoc(doc(fdb, 'promotions', promoId, 'tasks', t.id));
+      await deleteDoc(doc(fdb, 'promotions', promoId));
     } finally { setBusy(false); }
   }
 
@@ -508,12 +522,36 @@ function PromotionPlanner() {
     });
   }
 
-  async function saveNewPromotion() {
-    if (!newPromo.name.trim() || !newPromo.launchDate) return;
-    const id = await createPromotion(newPromo);
-    setActivePromoId(id);
-    setNewPromo({ name: '', launchDate: '', description: '' });
-    setPromoModalOpen(false);
+  function openNewPromo() {
+    setPromoForm({ id: null, name: '', launchDate: '', description: '' });
+    setPromoModal(true);
+  }
+
+  function openEditPromo(promo) {
+    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, description: promo.description || '' });
+    setPromoModal(true);
+  }
+
+  async function savePromo() {
+    if (!promoForm.name.trim() || !promoForm.launchDate) return;
+    const { id, ...data } = promoForm;
+    if (id) {
+      await saveExistingPromotion(id, data);
+    } else {
+      const newId = await createPromotion(data);
+      setActivePromoId(newId);
+    }
+    setPromoModal(false);
+    setPromoForm(null);
+  }
+
+  async function deletePromoClick() {
+    if (!promoForm.id) return;
+    if (!window.confirm(`Delete "${promoForm.name}" and all its tasks? This can't be undone, and it removes the promotion for everyone.`)) return;
+    await deletePromotion(promoForm.id);
+    setActivePromoId(null);
+    setPromoModal(false);
+    setPromoForm(null);
   }
 
   if (!promotions) {
@@ -555,7 +593,7 @@ function PromotionPlanner() {
         online ? 'Live – synced with your team' : 'Offline – changes will sync later'
       ),
       busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
-      e('button', { onClick: () => setPromoModalOpen(true), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion')
+      e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion')
     )
   );
 
@@ -681,7 +719,12 @@ function PromotionPlanner() {
           e(
             'div',
             null,
-            e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
+            e(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: '0.625rem' } },
+              e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
+              e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit')
+            ),
             activePromo.description && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem', maxWidth: '36rem' } }, activePromo.description)
           ),
           e(
@@ -783,14 +826,19 @@ function PromotionPlanner() {
   }
 
   let promoModalEl = null;
-  if (promoModalOpen) {
+  if (promoModal && promoForm) {
     promoModalEl = e(
       Modal,
-      { title: 'New promotion', onClose: () => setPromoModalOpen(false) },
-      e(Field, { label: 'Promotion name' }, e('input', { style: inputStyle, value: newPromo.name, onChange: (ev) => setNewPromo({ ...newPromo, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
-      e(Field, { label: 'Launch date' }, e('input', { type: 'date', style: inputStyle, value: newPromo.launchDate, onChange: (ev) => setNewPromo({ ...newPromo, launchDate: ev.target.value }) })),
-      e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: newPromo.description, onChange: (ev) => setNewPromo({ ...newPromo, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
-      e('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' } }, e('button', { onClick: saveNewPromotion, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Create promotion'))
+      { title: promoForm.id ? 'Edit promotion' : 'New promotion', onClose: () => { setPromoModal(false); setPromoForm(null); } },
+      e(Field, { label: 'Promotion name' }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
+      e(Field, { label: 'Launch date' }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
+      e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
+      e(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+        promoForm.id ? e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion') : e('span'),
+        e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
+      )
     );
   }
 
