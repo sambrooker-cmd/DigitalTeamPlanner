@@ -161,6 +161,8 @@ const ACTION_LABELS = {
   promo_created: 'created promotion',
   promo_updated: 'edited promotion',
   promo_deleted: 'deleted promotion',
+  promo_archived: 'archived promotion',
+  promo_unarchived: 'unarchived promotion',
   board_reset: 'reset the board to sample data',
 };
 
@@ -491,13 +493,18 @@ function PromotionPlanner({ user }) {
     return promoDocs.map((p) => ({ ...p, tasks: tasksByPromo[p.id] || [] }));
   }, [promoDocs, tasksByPromo]);
 
+  const timelinePromotions = useMemo(() => (promotions || []).filter((p) => !p.archived), [promotions]);
+
   const [activePromoId, setActivePromoId] = useState(null);
   useEffect(() => {
-    if (promotions && promotions.length && !activePromoId) setActivePromoId(promotions[0].id);
+    if (promotions && promotions.length && !activePromoId) {
+      setActivePromoId((promotions.find((p) => !p.archived) || promotions[0]).id);
+    }
   }, [promotions]);
 
   const [view, setView] = useState('board');
   const activityEntries = useActivityLog(view === 'activity');
+  const [showArchived, setShowArchived] = useState(false);
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
   const [taskModal, setTaskModal] = useState(false);
@@ -577,6 +584,14 @@ function PromotionPlanner({ user }) {
     } finally { setBusy(false); }
   }
 
+  async function setPromoArchived(promoId, promoName, archived) {
+    setBusy(true);
+    try {
+      await updateDoc(doc(fdb, 'promotions', promoId), { archived, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: archived ? 'promo_archived' : 'promo_unarchived', promoId, promoName });
+    } finally { setBusy(false); }
+  }
+
   async function resetData() {
     if (!window.confirm('Reset sample data? This replaces everything currently on the board for everyone.')) return;
     setBusy(true);
@@ -651,7 +666,7 @@ function PromotionPlanner({ user }) {
   }
 
   function openEditPromo(promo) {
-    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, endDate: promo.endDate || '', description: promo.description || '', createdBy: promo.createdBy, createdAt: promo.createdAt });
+    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, endDate: promo.endDate || '', description: promo.description || '', archived: promo.archived || false, createdBy: promo.createdBy, createdAt: promo.createdAt });
     setPromoModal(true);
   }
 
@@ -673,6 +688,14 @@ function PromotionPlanner({ user }) {
     if (!window.confirm(`Delete "${promoForm.name}" and all its tasks? This can't be undone, and it removes the promotion for everyone.`)) return;
     await deletePromotion(promoForm.id, promoForm.name);
     setActivePromoId(null);
+    setPromoModal(false);
+    setPromoForm(null);
+  }
+
+  async function toggleArchivePromo() {
+    if (!promoForm.id) return;
+    await setPromoArchived(promoForm.id, promoForm.name, !promoForm.archived);
+    if (!promoForm.archived) setActivePromoId(null); // archiving the active promotion: let the board pick a visible one
     setPromoModal(false);
     setPromoForm(null);
   }
@@ -712,7 +735,7 @@ function PromotionPlanner({ user }) {
     }
   }
 
-  const range = view === 'timeline' ? computeRange(promotions) : null;
+  const range = view === 'timeline' ? computeRange(timelinePromotions) : null;
   const ticks = range ? monthTicks(range.min, range.max) : [];
   const today = new Date();
 
@@ -768,10 +791,12 @@ function PromotionPlanner({ user }) {
 
   let boardSection = null;
   if (view === 'board') {
+    const archivedCount = promotions.filter((p) => p.archived).length;
+    const visibleTabs = promotions.filter((p) => showArchived || !p.archived);
     const promoTabs = e(
       'div',
       { style: { display: 'flex', gap: '0.75rem', padding: '1rem 2rem', overflowX: 'auto', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
-      promotions.map((p) => {
+      visibleTabs.map((p) => {
         const active = p.id === activePromoId;
         const pctVal = progressFor(p);
         return e(
@@ -779,9 +804,14 @@ function PromotionPlanner({ user }) {
           {
             key: p.id,
             onClick: () => setActivePromoId(p.id),
-            style: { flexShrink: 0, textAlign: 'left', padding: '0.75rem 1rem', borderRadius: '0.75rem', border: `1px solid ${active ? PURPLE : 'var(--border)'}`, background: active ? 'var(--surface-tint)' : 'var(--surface)', minWidth: '190px', cursor: 'pointer' },
+            style: { flexShrink: 0, textAlign: 'left', padding: '0.75rem 1rem', borderRadius: '0.75rem', border: `1px solid ${active ? PURPLE : 'var(--border)'}`, background: active ? 'var(--surface-tint)' : 'var(--surface)', minWidth: '190px', cursor: 'pointer', opacity: p.archived ? 0.6 : 1 },
           },
-          e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
+          e(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } },
+            e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
+            p.archived && e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived')
+          ),
           e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' } }, p.endDate ? `${formatDate(p.launchDate)} – ${formatDate(p.endDate)}` : `Launches ${formatDate(p.launchDate)}`),
           e(
             'div',
@@ -789,7 +819,16 @@ function PromotionPlanner({ user }) {
             e('div', { style: { height: '100%', borderRadius: '999px', width: `${pctVal}%`, background: active ? PURPLE : 'var(--accent-muted)' } })
           )
         );
-      })
+      }),
+      archivedCount > 0 && e(
+        'button',
+        {
+          key: 'toggle-archived',
+          onClick: () => setShowArchived((s) => !s),
+          style: { flexShrink: 0, alignSelf: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
+        },
+        showArchived ? 'Hide archived' : `Show archived (${archivedCount})`
+      )
     );
 
     let promoDetail = null;
@@ -875,6 +914,7 @@ function PromotionPlanner({ user }) {
               'div',
               { style: { display: 'flex', alignItems: 'center', gap: '0.625rem' } },
               e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
+              activePromo.archived && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived'),
               e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit')
             ),
             activePromo.description && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem', maxWidth: '36rem' } }, activePromo.description)
@@ -919,7 +959,7 @@ function PromotionPlanner({ user }) {
   if (view === 'timeline' && range) {
     const tickEls = ticks.map((t) => e('div', { key: t.toISOString(), style: { position: 'absolute', fontSize: '0.75rem', color: 'var(--text-muted)', left: `${pct(t, range.min, range.max)}%` } }, t.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })));
 
-    const rows = promotions.map((p) => {
+    const rows = timelinePromotions.map((p) => {
       const { start, launch, end, hasRealEnd } = taskDates(p);
       const stageLabel = promoStageLabel(p);
       const startPct = pct(start, range.min, range.max);
@@ -1047,7 +1087,12 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        promoForm.id ? e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion') : e('span'),
+        promoForm.id ? e(
+          'div',
+          { style: { display: 'flex', gap: '1rem' } },
+          e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
+          e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
+        ) : e('span'),
         e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
       )
     );

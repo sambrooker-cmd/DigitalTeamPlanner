@@ -87,9 +87,12 @@ by these rules server-side, not just hidden in the UI.
 ### Data model
 
 - `promotions/{promoId}` — one document per promotion (`name`, `launchDate`,
-  `endDate` (optional), `description`, plus
+  `endDate` (optional), `description`, `archived` (boolean), plus
   `createdBy`/`createdAt`/`updatedBy`/`updatedAt`). When `endDate` isn't
   set, the timeline estimates the promotion runs 14 days from launch.
+  Archived promotions are hidden from the timeline and, by default, from
+  the board's promotion tabs (a "Show archived" toggle reveals them there
+  so they can be unarchived or deleted).
 - `promotions/{promoId}/tasks/{taskId}` — one document per task/result card
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never
