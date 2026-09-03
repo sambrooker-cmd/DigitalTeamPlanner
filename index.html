@@ -113,8 +113,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
   getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
-  getDocs, onSnapshot, query, orderBy, runTransaction,
+  getDoc, getDocs, onSnapshot, query, orderBy, limit, runTransaction, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDD5nzjYUAFjEkWqLl0i70fCxdlEHE4OT0",
@@ -127,6 +130,8 @@ const firebaseConfig = {
 
 const firebaseApp = initializeApp(firebaseConfig);
 const fdb = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
+const googleProvider = new GoogleAuthProvider();
 
 const e = React.createElement;
 const useState = React.useState;
@@ -147,6 +152,17 @@ const TYPES = [
   { id: 'email', label: 'Email' },
   { id: 'paid', label: 'Paid media ad' },
 ];
+
+const ACTION_LABELS = {
+  task_created: 'created task',
+  task_updated: 'edited task',
+  task_moved: 'moved task',
+  task_deleted: 'deleted task',
+  promo_created: 'created promotion',
+  promo_updated: 'edited promotion',
+  promo_deleted: 'deleted promotion',
+  board_reset: 'reset the board to sample data',
+};
 
 const PURPLE = 'var(--accent)';
 const PURPLE_TEXT = 'var(--accent-text)';
@@ -297,7 +313,67 @@ function monthTicks(min, max) {
   return ticks;
 }
 
-// --- Backend: Firestore, shared by anyone with the link ---
+function formatDateTime(ts) {
+  if (!ts || typeof ts.toDate !== 'function') return 'just now';
+  return ts.toDate().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// --- Auth: Google sign-in gated by a Firestore allowlist ---
+function useAuthUser() {
+  const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
+  useEffect(() => onAuthStateChanged(auth, (u) => setUser(u || null)), []);
+  return user;
+}
+
+function useAllowed(email) {
+  const [allowed, setAllowed] = useState(null); // null = checking
+  useEffect(() => {
+    if (!email) { setAllowed(null); return; }
+    let cancelled = false;
+    setAllowed(null);
+    getDoc(doc(fdb, 'allowlist', email))
+      .then((snap) => { if (!cancelled) setAllowed(snap.exists()); })
+      .catch(() => { if (!cancelled) setAllowed(false); });
+    return () => { cancelled = true; };
+  }, [email]);
+  return allowed;
+}
+
+function CenteredMessage({ children }) {
+  return e(
+    'div',
+    { style: { width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', background: 'var(--bg)', padding: '1.5rem', textAlign: 'center' } },
+    children
+  );
+}
+
+function SignInScreen() {
+  return e(
+    CenteredMessage,
+    null,
+    e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Promotion Planner'),
+    e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '22rem' } }, 'Sign in to see and edit the shared board with your team.'),
+    e('button', {
+      onClick: () => signInWithPopup(auth, googleProvider).catch(() => {}),
+      style: { padding: '0.625rem 1.25rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' },
+    }, 'Sign in with Google')
+  );
+}
+
+function DeniedScreen({ user }) {
+  return e(
+    CenteredMessage,
+    null,
+    e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, "You're not on the list yet"),
+    e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '24rem' } }, `Signed in as ${user.email}. Ask whoever manages this board to add your email to the allowlist, then reload this page.`),
+    e('button', {
+      onClick: () => signOut(auth).catch(() => {}),
+      style: { fontSize: '0.875rem', color: 'var(--text-muted)', background: 'none', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 1rem', cursor: 'pointer' },
+    }, 'Sign out')
+  );
+}
+
+// --- Backend: Firestore, shared with everyone on the allowlist ---
 function useOnlineStatus() {
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   useEffect(() => {
@@ -354,9 +430,25 @@ function useTasksByPromo(promoIds) {
   return tasksByPromo;
 }
 
-function PromotionPlanner() {
+function useActivityLog(active) {
+  const [entries, setEntries] = useState(null); // null = loading
+  useEffect(() => {
+    if (!active) return;
+    const q = query(collection(fdb, 'activity'), orderBy('at', 'desc'), limit(100));
+    const unsub = onSnapshot(q, (snap) => setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => setEntries((prev) => prev || []));
+    return unsub;
+  }, [active]);
+  return entries;
+}
+
+function PromotionPlanner({ user }) {
   const online = useOnlineStatus();
   const seededRef = useRef(false);
+  const actorName = user.displayName || user.email;
+
+  async function logActivity(entry) {
+    try { await addDoc(collection(fdb, 'activity'), { ...entry, by: actorName, at: serverTimestamp() }); } catch (err) {}
+  }
 
   const promoDocs = usePromotionsCollection();
   const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
@@ -400,6 +492,7 @@ function PromotionPlanner() {
   }, [promotions]);
 
   const [view, setView] = useState('board');
+  const activityEntries = useActivityLog(view === 'activity');
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
   const [taskModal, setTaskModal] = useState(false);
@@ -416,45 +509,66 @@ function PromotionPlanner() {
     return Math.round((live / promo.tasks.length) * 100);
   }
 
-  // --- Mutations, all against Firestore ---
-  async function addTask(promoId, data) {
+  // --- Mutations, all against Firestore, each stamped with who/when and logged ---
+  async function addTask(promoId, promoName, data) {
     setBusy(true);
-    try { await addDoc(collection(fdb, 'promotions', promoId, 'tasks'), data); } finally { setBusy(false); }
+    try {
+      await addDoc(collection(fdb, 'promotions', promoId, 'tasks'), {
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+      });
+      await logActivity({ action: 'task_created', promoId, promoName, taskTitle: data.title });
+    } finally { setBusy(false); }
   }
 
-  async function saveExistingTask(promoId, taskId, data) {
+  async function saveExistingTask(promoId, promoName, taskId, data) {
     setBusy(true);
-    try { await setDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), data); } finally { setBusy(false); }
+    try {
+      await setDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'task_updated', promoId, promoName, taskTitle: data.title });
+    } finally { setBusy(false); }
   }
 
-  async function removeTask(promoId, taskId) {
+  async function removeTask(promoId, promoName, taskId, taskTitle) {
     setBusy(true);
-    try { await deleteDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId)); } finally { setBusy(false); }
+    try {
+      await deleteDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId));
+      await logActivity({ action: 'task_deleted', promoId, promoName, taskTitle });
+    } finally { setBusy(false); }
   }
 
-  async function moveTask(promoId, taskId, patch) {
-    try { await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), patch); } catch (err) {}
+  async function moveTask(promoId, promoName, taskId, taskTitle, patch, fromStatus) {
+    try {
+      await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...patch, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'task_moved', promoId, promoName, taskTitle, detail: `${fromStatus} → ${patch.status}` });
+    } catch (err) {}
   }
 
   async function createPromotion(data) {
     setBusy(true);
     try {
-      const ref = await addDoc(collection(fdb, 'promotions'), data);
+      const ref = await addDoc(collection(fdb, 'promotions'), {
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+      });
+      await logActivity({ action: 'promo_created', promoId: ref.id, promoName: data.name });
       return ref.id;
     } finally { setBusy(false); }
   }
 
   async function saveExistingPromotion(promoId, data) {
     setBusy(true);
-    try { await setDoc(doc(fdb, 'promotions', promoId), data); } finally { setBusy(false); }
+    try {
+      await setDoc(doc(fdb, 'promotions', promoId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'promo_updated', promoId, promoName: data.name });
+    } finally { setBusy(false); }
   }
 
-  async function deletePromotion(promoId) {
+  async function deletePromotion(promoId, promoName) {
     setBusy(true);
     try {
       const tasksSnap = await getDocs(collection(fdb, 'promotions', promoId, 'tasks'));
       for (const t of tasksSnap.docs) await deleteDoc(doc(fdb, 'promotions', promoId, 'tasks', t.id));
       await deleteDoc(doc(fdb, 'promotions', promoId));
+      await logActivity({ action: 'promo_deleted', promoName });
     } finally { setBusy(false); }
   }
 
@@ -477,13 +591,17 @@ function PromotionPlanner() {
           await setDoc(doc(fdb, 'promotions', id, 'tasks', taskId), taskData);
         }
       }
+      await logActivity({ action: 'board_reset' });
       setActivePromoId(seed[0].id);
     } finally { setBusy(false); }
   }
 
   function handleDrop(team, status) {
     if (!draggedTaskId || !activePromo) return;
-    moveTask(activePromo.id, draggedTaskId, { team, status });
+    const task = activePromo.tasks.find((t) => t.id === draggedTaskId);
+    if (task && (task.team !== team || task.status !== status)) {
+      moveTask(activePromo.id, activePromo.name, draggedTaskId, task.title, { team, status }, task.status);
+    }
     setDraggedTaskId(null);
   }
 
@@ -500,15 +618,15 @@ function PromotionPlanner() {
   function saveTask() {
     if (!taskForm.title.trim() || !activePromo) return;
     const { id, ...data } = taskForm;
-    if (id) saveExistingTask(activePromo.id, id, data);
-    else addTask(activePromo.id, data);
+    if (id) saveExistingTask(activePromo.id, activePromo.name, id, data);
+    else addTask(activePromo.id, activePromo.name, data);
     setTaskModal(false);
     setTaskForm(null);
   }
 
   function deleteTaskClick() {
     if (!activePromo) return;
-    removeTask(activePromo.id, taskForm.id);
+    removeTask(activePromo.id, activePromo.name, taskForm.id, taskForm.title);
     setTaskModal(false);
     setTaskForm(null);
   }
@@ -528,7 +646,7 @@ function PromotionPlanner() {
   }
 
   function openEditPromo(promo) {
-    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, description: promo.description || '' });
+    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, description: promo.description || '', createdBy: promo.createdBy, createdAt: promo.createdAt });
     setPromoModal(true);
   }
 
@@ -548,7 +666,7 @@ function PromotionPlanner() {
   async function deletePromoClick() {
     if (!promoForm.id) return;
     if (!window.confirm(`Delete "${promoForm.name}" and all its tasks? This can't be undone, and it removes the promotion for everyone.`)) return;
-    await deletePromotion(promoForm.id);
+    await deletePromotion(promoForm.id, promoForm.name);
     setActivePromoId(null);
     setPromoModal(false);
     setPromoForm(null);
@@ -593,25 +711,28 @@ function PromotionPlanner() {
         online ? 'Live – synced with your team' : 'Offline – changes will sync later'
       ),
       busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
-      e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion')
+      e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion'),
+      e(
+        'span',
+        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: '0.5rem', borderLeft: '1px solid var(--border)' } },
+        actorName,
+        e('button', { onClick: () => signOut(auth).catch(() => {}), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 } }, 'Sign out')
+      )
     )
   );
+
+  function tabStyle(active) {
+    return active
+      ? { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
+      : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
+  }
 
   const viewToggle = e(
     'div',
     { style: { display: 'flex', gap: '0.5rem', padding: '1rem 2rem 0' } },
-    e('button', {
-      onClick: () => setView('board'),
-      style: view === 'board'
-        ? { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
-        : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
-    }, 'Board'),
-    e('button', {
-      onClick: () => setView('timeline'),
-      style: view === 'timeline'
-        ? { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
-        : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
-    }, 'Timeline')
+    e('button', { onClick: () => setView('board'), style: tabStyle(view === 'board') }, 'Board'),
+    e('button', { onClick: () => setView('timeline'), style: tabStyle(view === 'timeline') }, 'Timeline'),
+    e('button', { onClick: () => setView('activity'), style: tabStyle(view === 'activity') }, 'Activity')
   );
 
   let boardSection = null;
@@ -800,6 +921,33 @@ function PromotionPlanner() {
     );
   }
 
+  let activitySection = null;
+  if (view === 'activity') {
+    activitySection = e(
+      'div',
+      { style: { padding: '1.5rem 2rem', maxWidth: '48rem' } },
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, 'Who created and changed what, most recent first — the last 100 changes across the whole board.'),
+      !activityEntries && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      activityEntries && activityEntries.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'No activity yet.'),
+      activityEntries && activityEntries.length > 0 && e(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column' } },
+        activityEntries.map((entry) => e(
+          'div',
+          { key: entry.id, style: { padding: '0.625rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.875rem', color: 'var(--text-primary)' } },
+          e('span', { style: { fontWeight: 600 } }, entry.by || 'Someone'),
+          ' ',
+          ACTION_LABELS[entry.action] || entry.action,
+          ' ',
+          (entry.taskTitle || entry.promoName) && e('span', { style: { fontStyle: 'italic' } }, `"${entry.taskTitle || entry.promoName}"`),
+          entry.taskTitle && entry.promoName && e('span', { style: { color: 'var(--text-secondary)' } }, ` in ${entry.promoName}`),
+          entry.detail && e('span', { style: { color: 'var(--text-secondary)' } }, ` (${entry.detail})`),
+          e('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.125rem' } }, formatDateTime(entry.at))
+        ))
+      )
+    );
+  }
+
   let taskModalEl = null;
   if (taskModal && taskForm) {
     taskModalEl = e(
@@ -816,6 +964,12 @@ function PromotionPlanner() {
       ),
       e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: taskForm.status, onChange: (ev) => setTaskForm({ ...taskForm, status: ev.target.value }) }, STATUSES.map((s) => e('option', { key: s, value: s }, s)))),
       e(Field, { label: taskForm.status === 'Reports' ? 'Detail on performance' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: taskForm.notes, onChange: (ev) => setTaskForm({ ...taskForm, notes: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'What happened, key metrics, what to repeat or change next time' : '' })),
+      taskForm.id && e(
+        'p',
+        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+        `Created by ${taskForm.createdBy || 'unknown'}${taskForm.createdAt ? ' · ' + formatDateTime(taskForm.createdAt) : ''}`,
+        taskForm.updatedBy && e('span', null, e('br'), `Last edited by ${taskForm.updatedBy}${taskForm.updatedAt ? ' · ' + formatDateTime(taskForm.updatedAt) : ''}`)
+      ),
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
@@ -833,6 +987,11 @@ function PromotionPlanner() {
       e(Field, { label: 'Promotion name' }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
       e(Field, { label: 'Launch date' }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
       e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
+      promoForm.id && e(
+        'p',
+        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+        `Created by ${promoForm.createdBy || 'unknown'}${promoForm.createdAt ? ' · ' + formatDateTime(promoForm.createdAt) : ''}`
+      ),
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
@@ -849,13 +1008,26 @@ function PromotionPlanner() {
     viewToggle,
     boardSection,
     timelineSection,
+    activitySection,
     taskModalEl,
     promoModalEl
   );
 }
 
+function App() {
+  const user = useAuthUser();
+  const email = user ? user.email : null;
+  const allowed = useAllowed(email);
+
+  if (user === undefined) return e(CenteredMessage, null, e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Checking sign-in…'));
+  if (user === null) return e(SignInScreen);
+  if (allowed === null) return e(CenteredMessage, null, e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Checking access…'));
+  if (allowed === false) return e(DeniedScreen, { user });
+  return e(PromotionPlanner, { user });
+}
+
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(e(PromotionPlanner));
+root.render(e(App));
 </script>
 </body>
 </html>
