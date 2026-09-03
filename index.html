@@ -731,15 +731,30 @@ function PromotionPlanner({ user }) {
     setPromoForm(null);
   }
 
+  async function archivePromo(promo) {
+    // Throws on failure — callers decide what stays open so the user can retry.
+    await setPromoArchived(promo.id, promo.name, !promo.archived);
+    if (!promo.archived) setActivePromoId(null); // archiving the active promotion: let the board pick a visible one
+  }
+
+  // Same action, reachable straight from the board header (no need to open Edit).
+  async function archiveActivePromoClick() {
+    if (!activePromo) return;
+    try {
+      await archivePromo(activePromo);
+    } catch (err) {
+      window.alert('Could not archive this promotion: ' + err.message);
+    }
+  }
+
   async function toggleArchivePromo() {
     if (!promoForm.id) return;
     try {
-      await setPromoArchived(promoForm.id, promoForm.name, !promoForm.archived);
+      await archivePromo(promoForm);
     } catch (err) {
       window.alert('Could not archive this promotion: ' + err.message);
       return;
     }
-    if (!promoForm.archived) setActivePromoId(null); // archiving the active promotion: let the board pick a visible one
     setPromoModal(false);
     setPromoForm(null);
   }
@@ -988,7 +1003,8 @@ function PromotionPlanner({ user }) {
               { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.625rem' } },
               e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
               activePromo.archived && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived'),
-              e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit')
+              e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit'),
+              e('button', { onClick: archiveActivePromoClick, style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, activePromo.archived ? 'Unarchive' : 'Archive')
             ),
             activePromo.description && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem', maxWidth: '36rem' } }, activePromo.description)
           ),
