@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Promotion Planner</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&display=swap');
+
+  :root {
+    --bg: #FAF9F7;
+    --surface: #FFFFFF;
+    --surface-alt: #F2EFEB;
+    --surface-tint: #F7F0F9;
+    --border: #E5E1DC;
+    --text-primary: #1F2937;
+    --text-secondary: #6B7280;
+    --text-muted: #9CA3AF;
+    --heading: #3A1245;
+    --accent: #6B207D;
+    --accent-text: #6B207D;
+    --accent-soft: #D8C3E0;
+    --accent-muted: #C9B8CE;
+    --on-accent: #FFFFFF;
+    --today: #C1552F;
+    --danger: #EF4444;
+    --success: #2F8F72;
+    --warn: #D9A400;
+    --warn-text: #B08900;
+    --team-acquisition: #C1552F;
+    --team-acquisition-rgb: 193, 85, 47;
+    --team-retention: #2F8F72;
+    --team-retention-rgb: 47, 143, 114;
+    --team-website: #2C4A6E;
+    --team-website-rgb: 44, 74, 110;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1B1620;
+      --surface: #241E2A;
+      --surface-alt: #2D2534;
+      --surface-tint: #332638;
+      --border: #3D3444;
+      --text-primary: #EDE7F0;
+      --text-secondary: #B8AEC0;
+      --text-muted: #8A7F92;
+      --heading: #E6D9EC;
+      --accent: #8B3FA0;
+      --accent-text: #C9A0D9;
+      --accent-soft: #4A2E52;
+      --accent-muted: #5A4A62;
+      --today: #E07A50;
+      --danger: #F87171;
+      --success: #4FBE9C;
+      --warn: #E8B93A;
+      --warn-text: #E8B93A;
+      --team-acquisition: #E07A50;
+      --team-acquisition-rgb: 224, 122, 80;
+      --team-retention: #4FBE9C;
+      --team-retention-rgb: 79, 190, 156;
+      --team-website: #7FA8D6;
+      --team-website-rgb: 127, 168, 214;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #1B1620;
+    --surface: #241E2A;
+    --surface-alt: #2D2534;
+    --surface-tint: #332638;
+    --border: #3D3444;
+    --text-primary: #EDE7F0;
+    --text-secondary: #B8AEC0;
+    --text-muted: #8A7F92;
+    --heading: #E6D9EC;
+    --accent: #8B3FA0;
+    --accent-text: #C9A0D9;
+    --accent-soft: #4A2E52;
+    --accent-muted: #5A4A62;
+    --today: #E07A50;
+    --danger: #F87171;
+    --success: #4FBE9C;
+    --warn: #E8B93A;
+    --warn-text: #E8B93A;
+    --team-acquisition: #E07A50;
+    --team-acquisition-rgb: 224, 122, 80;
+    --team-retention: #4FBE9C;
+    --team-retention-rgb: 79, 190, 156;
+    --team-website: #7FA8D6;
+    --team-website-rgb: 127, 168, 214;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text-primary); font-family: Arial, Helvetica, sans-serif; }
+  .font-display { font-family: 'Quicksand', Arial, sans-serif; text-wrap: balance; }
+  .task-card { transition: transform .12s ease, box-shadow .12s ease; }
+  .task-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(58,18,69,0.10); }
+  .task-card.dragging { opacity: 0.35; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
+import {
+  getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
+  getDocs, onSnapshot, query, orderBy, runTransaction,
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDD5nzjYUAFjEkWqLl0i70fCxdlEHE4OT0",
+  authDomain: "promotions-planner.firebaseapp.com",
+  projectId: "promotions-planner",
+  storageBucket: "promotions-planner.firebasestorage.app",
+  messagingSenderId: "38412993371",
+  appId: "1:38412993371:web:672f97433181a69249507e",
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const fdb = getFirestore(firebaseApp);
+
+const e = React.createElement;
+const useState = React.useState;
+const useEffect = React.useEffect;
+const useRef = React.useRef;
+const useMemo = React.useMemo;
+
+const TEAMS = [
+  { id: 'acquisition', label: 'Acquisition', color: 'var(--team-acquisition)', rgb: 'var(--team-acquisition-rgb)' },
+  { id: 'retention', label: 'Retention', color: 'var(--team-retention)', rgb: 'var(--team-retention-rgb)' },
+  { id: 'website', label: 'Website', color: 'var(--team-website)', rgb: 'var(--team-website-rgb)' },
+];
+
+const STATUSES = ['Briefing', 'In progress', 'In review', 'Live', 'Reports'];
+
+const TYPES = [
+  { id: 'website', label: 'Website change' },
+  { id: 'email', label: 'Email' },
+  { id: 'paid', label: 'Paid media ad' },
+];
+
+const PURPLE = 'var(--accent)';
+const PURPLE_TEXT = 'var(--accent-text)';
+const PURPLE_DARK = 'var(--heading)';
+const PURPLE_LIGHT = 'var(--accent-soft)';
+const TODAY_COLOR = 'var(--today)';
+
+function genId() {
+  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  return 't' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function daysUntil(dateStr) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(dateStr);
+  return Math.round((target - today) / (1000 * 60 * 60 * 24));
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function seedPromotions() {
+  return [
+    {
+      id: 'p1',
+      name: 'Wave Season Sale',
+      launchDate: '2026-09-22',
+      description: 'Peak-period offer across the no-fly range, positioned on value and cabin upgrades.',
+      tasks: [
+        { id: genId(), team: 'website', type: 'website', title: 'Build Wave Season landing page', assignee: 'Priya', due: '2026-09-10', status: 'In progress', notes: 'Reuse promo template, swap hero imagery.' },
+        { id: genId(), team: 'website', type: 'website', title: 'Update homepage promo banner', assignee: 'Priya', due: '2026-09-15', status: 'Briefing', notes: '' },
+        { id: genId(), team: 'acquisition', type: 'paid', title: 'Brief prospecting ad creative', assignee: 'Sam', due: '2026-09-08', status: 'In review', notes: 'Three variants for Meta broad audience.' },
+        { id: genId(), team: 'acquisition', type: 'paid', title: 'Launch Google Search campaign', assignee: 'Dan', due: '2026-09-18', status: 'Briefing', notes: '' },
+        { id: genId(), team: 'retention', type: 'email', title: 'Draft existing-guest early access email', assignee: 'Amara', due: '2026-09-12', status: 'In progress', notes: '48hr early access before public launch.' },
+      ],
+    },
+    {
+      id: 'p2',
+      name: 'Solar Eclipse Sailing',
+      launchDate: '2026-10-03',
+      description: 'Limited-availability sailing tied to the eclipse path, adult-only, strong scarcity angle.',
+      tasks: [
+        { id: genId(), team: 'website', type: 'website', title: 'Add sailing detail page with eclipse timings', assignee: 'Priya', due: '2026-09-20', status: 'Briefing', notes: '' },
+        { id: genId(), team: 'acquisition', type: 'paid', title: 'Retarget past-visitor audience', assignee: 'Sam', due: '2026-09-25', status: 'Briefing', notes: 'Prospecting underperformed last time, retarget-only.' },
+        { id: genId(), team: 'retention', type: 'email', title: 'Send teaser to past-eclipse-cruise guests', assignee: 'Amara', due: '2026-09-19', status: 'Briefing', notes: '' },
+      ],
+    },
+    {
+      id: 'p3',
+      name: 'Early Summer Sale',
+      launchDate: '2026-08-15',
+      description: 'Already live — early booking incentive for 2027 sailings.',
+      tasks: [
+        { id: genId(), team: 'website', type: 'website', title: 'Homepage takeover + offer page', assignee: 'Priya', due: '2026-08-10', status: 'Live', notes: '' },
+        { id: genId(), team: 'website', type: 'website', title: 'Landing page performance summary', assignee: 'Priya', due: '2026-08-29', status: 'Reports', notes: 'Conversion rate 4.1 percent, up from 3.3 percent baseline.' },
+        { id: genId(), team: 'acquisition', type: 'paid', title: 'Prospecting + retargeting campaign', assignee: 'Sam', due: '2026-08-12', status: 'Live', notes: '' },
+        { id: genId(), team: 'acquisition', type: 'paid', title: 'Paid media results summary', assignee: 'Sam', due: '2026-08-29', status: 'Reports', notes: 'CPA of GBP 42, 18 percent under target. Retargeting outperformed prospecting.' },
+        { id: genId(), team: 'retention', type: 'email', title: 'Existing-guest offer email', assignee: 'Amara', due: '2026-08-11', status: 'Live', notes: '' },
+        { id: genId(), team: 'retention', type: 'email', title: 'Email results summary', assignee: 'Amara', due: '2026-08-29', status: 'Reports', notes: 'Open rate 38 percent, 210 bookings attributed.' },
+      ],
+    },
+  ];
+}
+
+function Modal({ title, onClose, children }) {
+  return e(
+    'div',
+    {
+      style: { background: 'rgba(30,20,32,0.45)', zIndex: 50, position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' },
+      onClick: onClose,
+    },
+    e(
+      'div',
+      {
+        role: 'dialog',
+        'aria-modal': 'true',
+        style: { background: 'var(--surface)', borderRadius: '12px', width: '100%', maxWidth: '28rem', padding: '1.5rem', maxHeight: '90vh', overflowY: 'auto' },
+        onClick: (ev) => ev.stopPropagation(),
+      },
+      e(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' } },
+        e('h3', { className: 'font-display', style: { color: PURPLE_DARK, fontSize: '1.125rem', margin: 0 } }, title),
+        e('button', { onClick: onClose, style: { color: 'var(--text-muted)', fontSize: '1.25rem', lineHeight: 1, background: 'none', border: 'none', cursor: 'pointer' } }, '×')
+      ),
+      children
+    )
+  );
+}
+
+function Field({ label, children }) {
+  return e(
+    'div',
+    { style: { marginBottom: '0.75rem' } },
+    e('label', { style: { display: 'block', fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.25rem' } }, label),
+    children
+  );
+}
+
+const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', fontSize: '0.875rem', outline: 'none', fontFamily: 'inherit', background: 'var(--surface)', color: 'var(--text-primary)' };
+
+// --- Timeline helpers ---
+function taskDates(promo) {
+  const launch = new Date(promo.launchDate);
+  const dueTimes = promo.tasks.map((t) => t.due).filter(Boolean).map((d) => new Date(d).getTime());
+  const startTime = dueTimes.length ? Math.min(...dueTimes, launch.getTime()) : launch.getTime() - 14 * 86400000;
+  return {
+    start: new Date(startTime),
+    launch,
+    reportEnd: new Date(launch.getTime() + 14 * 86400000),
+  };
+}
+
+function promoStageLabel(promo) {
+  if (!promo.tasks.length) return 'Not started';
+  const idx = Math.min(...promo.tasks.map((t) => STATUSES.indexOf(t.status)));
+  return STATUSES[idx];
+}
+
+function computeRange(promotions) {
+  const all = [new Date()];
+  promotions.forEach((p) => {
+    const { start, reportEnd } = taskDates(p);
+    all.push(start, reportEnd);
+  });
+  const min = new Date(Math.min(...all.map((d) => d.getTime())) - 5 * 86400000);
+  const max = new Date(Math.max(...all.map((d) => d.getTime())) + 5 * 86400000);
+  return { min, max };
+}
+
+function pct(date, min, max) {
+  const total = max.getTime() - min.getTime();
+  if (total <= 0) return 0;
+  return ((date.getTime() - min.getTime()) / total) * 100;
+}
+
+function monthTicks(min, max) {
+  const ticks = [];
+  let cur = new Date(min.getFullYear(), min.getMonth(), 1);
+  while (cur <= max) {
+    ticks.push(new Date(cur));
+    cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+  }
+  return ticks;
+}
+
+// --- Backend: Firestore, shared by anyone with the link ---
+function useOnlineStatus() {
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
+  return online;
+}
+
+function usePromotionsCollection() {
+  const [docs, setDocs] = useState(null); // null = loading
+  useEffect(() => {
+    const q = query(collection(fdb, 'promotions'), orderBy('launchDate'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      () => setDocs((prev) => prev || [])
+    );
+    return unsub;
+  }, []);
+  return docs;
+}
+
+function useTasksByPromo(promoIds) {
+  const [tasksByPromo, setTasksByPromo] = useState({});
+  const unsubsRef = useRef({});
+  const idsKey = promoIds.join(',');
+  useEffect(() => {
+    const currentIds = new Set(promoIds);
+    promoIds.forEach((id) => {
+      if (!unsubsRef.current[id]) {
+        unsubsRef.current[id] = onSnapshot(
+          collection(fdb, 'promotions', id, 'tasks'),
+          (snap) => {
+            const tasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setTasksByPromo((prev) => ({ ...prev, [id]: tasks }));
+          },
+          () => {}
+        );
+      }
+    });
+    Object.keys(unsubsRef.current).forEach((id) => {
+      if (!currentIds.has(id)) {
+        unsubsRef.current[id]();
+        delete unsubsRef.current[id];
+        setTasksByPromo((prev) => { const next = { ...prev }; delete next[id]; return next; });
+      }
+    });
+  }, [idsKey]);
+  useEffect(() => () => { Object.values(unsubsRef.current).forEach((fn) => fn()); }, []);
+  return tasksByPromo;
+}
+
+function PromotionPlanner() {
+  const online = useOnlineStatus();
+  const seededRef = useRef(false);
+
+  const promoDocs = usePromotionsCollection();
+  const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
+  const tasksByPromo = useTasksByPromo(promoIds);
+
+  // Seed the store once, guarded by a transaction so concurrent first-openers don't double-seed.
+  useEffect(() => {
+    if (seededRef.current) return;
+    seededRef.current = true;
+    (async () => {
+      try {
+        const shouldSeed = await runTransaction(fdb, async (tx) => {
+          const sentinelRef = doc(fdb, 'meta', 'seed');
+          const snap = await tx.get(sentinelRef);
+          if (snap.exists()) return false;
+          tx.set(sentinelRef, { seededAt: Date.now() });
+          return true;
+        });
+        if (!shouldSeed) return;
+        const seed = seedPromotions();
+        for (const promo of seed) {
+          const { tasks, id, ...meta } = promo;
+          await setDoc(doc(fdb, 'promotions', id), meta);
+          for (const task of tasks) {
+            const { id: taskId, ...taskData } = task;
+            await setDoc(doc(fdb, 'promotions', id, 'tasks', taskId), taskData);
+          }
+        }
+      } catch (err) { /* seeding is best-effort */ }
+    })();
+  }, []);
+
+  const promotions = useMemo(() => {
+    if (!promoDocs) return null;
+    return promoDocs.map((p) => ({ ...p, tasks: tasksByPromo[p.id] || [] }));
+  }, [promoDocs, tasksByPromo]);
+
+  const [activePromoId, setActivePromoId] = useState(null);
+  useEffect(() => {
+    if (promotions && promotions.length && !activePromoId) setActivePromoId(promotions[0].id);
+  }, [promotions]);
+
+  const [view, setView] = useState('board');
+  const [activeFilters, setActiveFilters] = useState(new Set());
+  const [draggedTaskId, setDraggedTaskId] = useState(null);
+  const [taskModal, setTaskModal] = useState(false);
+  const [promoModalOpen, setPromoModalOpen] = useState(false);
+  const [newPromo, setNewPromo] = useState({ name: '', launchDate: '', description: '' });
+  const [taskForm, setTaskForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const activePromo = promotions ? (promotions.find((p) => p.id === activePromoId) || promotions[0]) : null;
+
+  function progressFor(promo) {
+    if (!promo.tasks.length) return 0;
+    const live = promo.tasks.filter((t) => t.status === 'Live' || t.status === 'Reports').length;
+    return Math.round((live / promo.tasks.length) * 100);
+  }
+
+  // --- Mutations, all against Firestore ---
+  async function addTask(promoId, data) {
+    setBusy(true);
+    try { await addDoc(collection(fdb, 'promotions', promoId, 'tasks'), data); } finally { setBusy(false); }
+  }
+
+  async function saveExistingTask(promoId, taskId, data) {
+    setBusy(true);
+    try { await setDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), data); } finally { setBusy(false); }
+  }
+
+  async function removeTask(promoId, taskId) {
+    setBusy(true);
+    try { await deleteDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId)); } finally { setBusy(false); }
+  }
+
+  async function moveTask(promoId, taskId, patch) {
+    try { await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), patch); } catch (err) {}
+  }
+
+  async function createPromotion(data) {
+    setBusy(true);
+    try {
+      const ref = await addDoc(collection(fdb, 'promotions'), data);
+      return ref.id;
+    } finally { setBusy(false); }
+  }
+
+  async function resetData() {
+    if (!window.confirm('Reset sample data? This replaces everything currently on the board for everyone.')) return;
+    setBusy(true);
+    try {
+      const existing = await getDocs(collection(fdb, 'promotions'));
+      for (const d of existing.docs) {
+        const tasksSnap = await getDocs(collection(fdb, 'promotions', d.id, 'tasks'));
+        for (const t of tasksSnap.docs) await deleteDoc(doc(fdb, 'promotions', d.id, 'tasks', t.id));
+        await deleteDoc(doc(fdb, 'promotions', d.id));
+      }
+      const seed = seedPromotions();
+      for (const promo of seed) {
+        const { tasks, id, ...meta } = promo;
+        await setDoc(doc(fdb, 'promotions', id), meta);
+        for (const task of tasks) {
+          const { id: taskId, ...taskData } = task;
+          await setDoc(doc(fdb, 'promotions', id, 'tasks', taskId), taskData);
+        }
+      }
+      setActivePromoId(seed[0].id);
+    } finally { setBusy(false); }
+  }
+
+  function handleDrop(team, status) {
+    if (!draggedTaskId || !activePromo) return;
+    moveTask(activePromo.id, draggedTaskId, { team, status });
+    setDraggedTaskId(null);
+  }
+
+  function openNewTask(team, status) {
+    setTaskForm({ id: null, team, status, type: 'website', title: '', assignee: '', due: '', notes: '' });
+    setTaskModal(true);
+  }
+
+  function openEditTask(task) {
+    setTaskForm({ ...task });
+    setTaskModal(true);
+  }
+
+  function saveTask() {
+    if (!taskForm.title.trim() || !activePromo) return;
+    const { id, ...data } = taskForm;
+    if (id) saveExistingTask(activePromo.id, id, data);
+    else addTask(activePromo.id, data);
+    setTaskModal(false);
+    setTaskForm(null);
+  }
+
+  function deleteTaskClick() {
+    if (!activePromo) return;
+    removeTask(activePromo.id, taskForm.id);
+    setTaskModal(false);
+    setTaskForm(null);
+  }
+
+  function toggleFilter(typeId) {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(typeId)) next.delete(typeId);
+      else next.add(typeId);
+      return next;
+    });
+  }
+
+  async function saveNewPromotion() {
+    if (!newPromo.name.trim() || !newPromo.launchDate) return;
+    const id = await createPromotion(newPromo);
+    setActivePromoId(id);
+    setNewPromo({ name: '', launchDate: '', description: '' });
+    setPromoModalOpen(false);
+  }
+
+  if (!promotions) {
+    return e(
+      'div',
+      { style: { width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' } },
+      e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading board…')
+    );
+  }
+
+  const daysLeft = activePromo ? daysUntil(activePromo.launchDate) : null;
+  const range = view === 'timeline' ? computeRange(promotions) : null;
+  const ticks = range ? monthTicks(range.min, range.max) : [];
+  const today = new Date();
+
+  const header = e(
+    'div',
+    { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1.25rem 2rem', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
+    e(
+      'div',
+      null,
+      e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Promotion Planner'),
+      e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.125rem' } }, 'Keeping Acquisition, Retention and Website aligned on every launch')
+    ),
+    e(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: '0.75rem' } },
+      e(
+        'span',
+        {
+          style: {
+            fontSize: '0.75rem',
+            color: online ? 'var(--success)' : 'var(--warn-text)',
+            display: 'flex', alignItems: 'center', gap: '0.375rem',
+          },
+          title: online ? 'Changes sync live with everyone viewing this board' : "You're offline — changes will sync once you're back",
+        },
+        e('span', { style: { width: '7px', height: '7px', borderRadius: '999px', background: online ? 'var(--success)' : 'var(--warn)', display: 'inline-block' } }),
+        online ? 'Live – synced with your team' : 'Offline – changes will sync later'
+      ),
+      busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
+      e('button', { onClick: () => setPromoModalOpen(true), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion')
+    )
+  );
+
+  const viewToggle = e(
+    'div',
+    { style: { display: 'flex', gap: '0.5rem', padding: '1rem 2rem 0' } },
+    e('button', {
+      onClick: () => setView('board'),
+      style: view === 'board'
+        ? { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
+        : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
+    }, 'Board'),
+    e('button', {
+      onClick: () => setView('timeline'),
+      style: view === 'timeline'
+        ? { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
+        : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
+    }, 'Timeline')
+  );
+
+  let boardSection = null;
+  if (view === 'board') {
+    const promoTabs = e(
+      'div',
+      { style: { display: 'flex', gap: '0.75rem', padding: '1rem 2rem', overflowX: 'auto', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
+      promotions.map((p) => {
+        const active = p.id === activePromoId;
+        const pctVal = progressFor(p);
+        return e(
+          'button',
+          {
+            key: p.id,
+            onClick: () => setActivePromoId(p.id),
+            style: { flexShrink: 0, textAlign: 'left', padding: '0.75rem 1rem', borderRadius: '0.75rem', border: `1px solid ${active ? PURPLE : 'var(--border)'}`, background: active ? 'var(--surface-tint)' : 'var(--surface)', minWidth: '190px', cursor: 'pointer' },
+          },
+          e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
+          e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' } }, `Launches ${formatDate(p.launchDate)}`),
+          e(
+            'div',
+            { style: { width: '100%', height: '6px', borderRadius: '999px', marginTop: '0.5rem', overflow: 'hidden', background: 'var(--surface-alt)' } },
+            e('div', { style: { height: '100%', borderRadius: '999px', width: `${pctVal}%`, background: active ? PURPLE : 'var(--accent-muted)' } })
+          )
+        );
+      })
+    );
+
+    let promoDetail = null;
+    if (activePromo) {
+      const typeFilters = e(
+        'div',
+        { style: { display: 'flex', gap: '0.5rem', marginBottom: '1rem' } },
+        TYPES.map((t) => {
+          const on = activeFilters.has(t.id);
+          return e('button', {
+            key: t.id,
+            onClick: () => toggleFilter(t.id),
+            style: on
+              ? { fontSize: '0.75rem', padding: '0.375rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE, color: 'var(--on-accent)', cursor: 'pointer' }
+              : { fontSize: '0.75rem', padding: '0.375rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
+          }, t.label);
+        }),
+        activeFilters.size > 0 && e('button', { onClick: () => setActiveFilters(new Set()), style: { fontSize: '0.75rem', padding: '0.375rem 0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Clear filter')
+      );
+
+      const gridHeader = [e('div', { key: 'blank' })].concat(
+        STATUSES.map((s) => e('div', { key: s, style: { fontSize: '0.875rem', fontWeight: 600, padding: '0 0.5rem 0.25rem', color: 'var(--text-muted)' } }, s))
+      );
+
+      const gridRows = TEAMS.map((team) => {
+        const teamCell = e(
+          'div',
+          { key: `${team.id}-label`, style: { display: 'flex', alignItems: 'flex-start', paddingTop: '0.25rem', paddingRight: '0.5rem' } },
+          e('span', { style: { fontSize: '0.875rem', fontWeight: 600, padding: '0.5rem 0.75rem', borderRadius: '0.5rem', width: '100%', background: `rgba(${team.rgb}, 0.16)`, color: team.color } }, team.label)
+        );
+        const statusCells = STATUSES.map((status) => {
+          const cellTasks = activePromo.tasks.filter((t) => t.team === team.id && t.status === status);
+          const cards = cellTasks.map((task) => {
+            const type = TYPES.find((t) => t.id === task.type);
+            const dim = activeFilters.size > 0 && !activeFilters.has(task.type);
+            return e(
+              'div',
+              {
+                key: task.id,
+                draggable: true,
+                onDragStart: () => setDraggedTaskId(task.id),
+                onDragEnd: () => setDraggedTaskId(null),
+                onClick: () => openEditTask(task),
+                className: `task-card${draggedTaskId === task.id ? ' dragging' : ''}`,
+                style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', opacity: dim ? 0.3 : 1, border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: team.color, borderLeftStyle: 'solid' },
+              },
+              e('div', { style: { fontSize: '0.75rem', fontWeight: 500, marginBottom: '0.25rem', color: PURPLE_TEXT } }, type ? type.label : task.type),
+              e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', lineHeight: 1.35 } }, task.title),
+              status === 'Reports' && task.notes && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.35 } }, task.notes),
+              e(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' } },
+                e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.assignee || 'Unassigned'),
+                e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.due ? formatDate(task.due) : '')
+              )
+            );
+          });
+          return e(
+            'div',
+            {
+              key: status,
+              onDragOver: (ev) => ev.preventDefault(),
+              onDrop: () => handleDrop(team.id, status),
+              style: { borderRadius: '0.5rem', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'var(--surface-alt)', minHeight: '116px' },
+            },
+            ...cards,
+            e('button', { onClick: () => openNewTask(team.id, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reports' ? '+ Add result' : '+ Add task')
+          );
+        });
+        return e(React.Fragment, { key: team.id }, teamCell, ...statusCells);
+      });
+
+      promoDetail = e(
+        'div',
+        { style: { padding: '1.5rem 2rem' } },
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1.25rem' } },
+          e(
+            'div',
+            null,
+            e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
+            activePromo.description && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem', maxWidth: '36rem' } }, activePromo.description)
+          ),
+          e(
+            'div',
+            { style: { textAlign: 'right', flexShrink: 0, marginLeft: '1rem' } },
+            e('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Launch date'),
+            e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, formatDate(activePromo.launchDate)),
+            daysLeft !== null && e('div', { style: { fontSize: '0.75rem', marginTop: '0.125rem', color: daysLeft < 0 ? 'var(--text-muted)' : daysLeft <= 7 ? 'var(--today)' : 'var(--text-secondary)' } }, daysLeft < 0 ? 'Launched' : daysLeft === 0 ? 'Launches today' : `${daysLeft} day${daysLeft === 1 ? '' : 's'} to go`)
+          )
+        ),
+        typeFilters,
+        e('div', { style: { display: 'grid', gap: '0.625rem', gridTemplateColumns: '140px repeat(5, 1fr)' } }, ...gridHeader, ...gridRows),
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.5rem' } },
+          e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit."),
+          e('button', { onClick: resetData, style: { fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0, marginLeft: '1rem', background: 'none', border: 'none', cursor: 'pointer' } }, 'Reset sample data')
+        )
+      );
+    }
+
+    boardSection = e(React.Fragment, null, promoTabs, promoDetail);
+  }
+
+  let timelineSection = null;
+  if (view === 'timeline' && range) {
+    const tickEls = ticks.map((t) => e('div', { key: t.toISOString(), style: { position: 'absolute', fontSize: '0.75rem', color: 'var(--text-muted)', left: `${pct(t, range.min, range.max)}%` } }, t.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })));
+
+    const rows = promotions.map((p) => {
+      const { start, launch, reportEnd } = taskDates(p);
+      const stageLabel = promoStageLabel(p);
+      const startPct = pct(start, range.min, range.max);
+      const launchPct = pct(launch, range.min, range.max);
+      const endPct = pct(reportEnd, range.min, range.max);
+      return e(
+        'button',
+        { key: p.id, onClick: () => { setActivePromoId(p.id); setView('board'); }, style: { width: '100%', textAlign: 'left', marginBottom: '1.5rem', display: 'block', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } },
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' } },
+          e('span', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
+          e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, stageLabel)
+        ),
+        e(
+          'div',
+          { style: { position: 'relative', height: '24px', borderRadius: '999px', background: 'var(--surface-alt)' } },
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startPct}%`, width: `${Math.max(launchPct - startPct, 1)}%`, background: PURPLE_LIGHT } }),
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchPct}%`, width: `${Math.max(endPct - launchPct, 1)}%`, background: PURPLE } }),
+          e('div', { title: `Launch ${formatDate(p.launchDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `calc(${launchPct}% - 5px)`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } })
+        )
+      );
+    });
+
+    timelineSection = e(
+      'div',
+      { style: { padding: '1.5rem 2rem' } },
+      e('div', { style: { position: 'relative', marginBottom: '1.5rem', height: '18px' } }, ...tickEls),
+      e(
+        'div',
+        { style: { position: 'relative', paddingTop: '4px' } },
+        e('div', { style: { position: 'absolute', top: 0, bottom: 0, width: '1px', left: `${pct(today, range.min, range.max)}%`, background: TODAY_COLOR, zIndex: 1 } }),
+        ...rows
+      ),
+      e(
+        'div',
+        { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '1rem', marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' } },
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '999px', background: PURPLE_LIGHT } }), 'Prep (briefing to review)'),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '999px', background: PURPLE } }), 'Live and reporting'),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '999px', background: PURPLE_DARK } }), 'Launch date'),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '1px', height: '12px', background: TODAY_COLOR } }), 'Today')
+      ),
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, "Click a promotion to open its board. Stage shown is the least-advanced team, so you can spot who's behind.")
+    );
+  }
+
+  let taskModalEl = null;
+  if (taskModal && taskForm) {
+    taskModalEl = e(
+      Modal,
+      { title: taskForm.id ? 'Edit task' : 'New task', onClose: () => { setTaskModal(false); setTaskForm(null); } },
+      e(Field, { label: 'Team' }, e('select', { style: inputStyle, value: taskForm.team, onChange: (ev) => setTaskForm({ ...taskForm, team: ev.target.value }) }, TEAMS.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
+      e(Field, { label: 'Activity type' }, e('select', { style: inputStyle, value: taskForm.type, onChange: (ev) => setTaskForm({ ...taskForm, type: ev.target.value }) }, TYPES.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
+      e(Field, { label: taskForm.status === 'Reports' ? 'Result headline' : 'Task' }, e('input', { style: inputStyle, value: taskForm.title, onChange: (ev) => setTaskForm({ ...taskForm, title: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'e.g. Conversion rate 4.1 percent' : 'e.g. Brief paid social creative' })),
+      e(
+        'div',
+        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+        e(Field, { label: 'Assignee' }, e('input', { style: inputStyle, value: taskForm.assignee, onChange: (ev) => setTaskForm({ ...taskForm, assignee: ev.target.value }) })),
+        e(Field, { label: 'Due date' }, e('input', { type: 'date', style: inputStyle, value: taskForm.due, onChange: (ev) => setTaskForm({ ...taskForm, due: ev.target.value }) }))
+      ),
+      e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: taskForm.status, onChange: (ev) => setTaskForm({ ...taskForm, status: ev.target.value }) }, STATUSES.map((s) => e('option', { key: s, value: s }, s)))),
+      e(Field, { label: taskForm.status === 'Reports' ? 'Detail on performance' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: taskForm.notes, onChange: (ev) => setTaskForm({ ...taskForm, notes: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'What happened, key metrics, what to repeat or change next time' : '' })),
+      e(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+        taskForm.id ? e('button', { onClick: deleteTaskClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete') : e('span'),
+        e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+      )
+    );
+  }
+
+  let promoModalEl = null;
+  if (promoModalOpen) {
+    promoModalEl = e(
+      Modal,
+      { title: 'New promotion', onClose: () => setPromoModalOpen(false) },
+      e(Field, { label: 'Promotion name' }, e('input', { style: inputStyle, value: newPromo.name, onChange: (ev) => setNewPromo({ ...newPromo, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
+      e(Field, { label: 'Launch date' }, e('input', { type: 'date', style: inputStyle, value: newPromo.launchDate, onChange: (ev) => setNewPromo({ ...newPromo, launchDate: ev.target.value }) })),
+      e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: newPromo.description, onChange: (ev) => setNewPromo({ ...newPromo, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
+      e('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' } }, e('button', { onClick: saveNewPromotion, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Create promotion'))
+    );
+  }
+
+  return e(
+    'div',
+    { style: { width: '100%', minHeight: '100vh', background: 'var(--bg)', fontFamily: 'Arial, Helvetica, sans-serif' } },
+    header,
+    viewToggle,
+    boardSection,
+    timelineSection,
+    taskModalEl,
+    promoModalEl
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(e(PromotionPlanner));
+</script>
+</body>
+</html>
