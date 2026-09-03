@@ -87,7 +87,9 @@ by these rules server-side, not just hidden in the UI.
 ### Data model
 
 - `promotions/{promoId}` — one document per promotion (`name`, `launchDate`,
-  `description`, plus `createdBy`/`createdAt`/`updatedBy`/`updatedAt`).
+  `endDate` (optional), `description`, plus
+  `createdBy`/`createdAt`/`updatedBy`/`updatedAt`). When `endDate` isn't
+  set, the timeline estimates the promotion runs 14 days from launch.
 - `promotions/{promoId}/tasks/{taskId}` — one document per task/result card
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never
