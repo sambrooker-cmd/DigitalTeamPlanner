@@ -535,7 +535,10 @@ function PromotionPlanner({ user }) {
   async function saveExistingTask(promoId, promoName, taskId, data) {
     setBusy(true);
     try {
-      await setDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
+      // A merge update, not a full replace: older tasks saved before some fields existed
+      // (createdBy/createdAt) don't carry them, and Firestore rejects `undefined` values —
+      // updateDoc only touches the fields we actually pass, so that's never a problem here.
+      await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'task_updated', promoId, promoName, taskTitle: data.title });
     } finally { setBusy(false); }
   }
@@ -569,7 +572,8 @@ function PromotionPlanner({ user }) {
   async function saveExistingPromotion(promoId, data) {
     setBusy(true);
     try {
-      await setDoc(doc(fdb, 'promotions', promoId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
+      // Merge update, same reasoning as saveExistingTask above.
+      await updateDoc(doc(fdb, 'promotions', promoId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'promo_updated', promoId, promoName: data.name });
     } finally { setBusy(false); }
   }
@@ -635,11 +639,19 @@ function PromotionPlanner({ user }) {
     setTaskModal(true);
   }
 
-  function saveTask() {
+  async function saveTask() {
     if (!taskForm.title.trim() || !activePromo) return;
-    const { id, ...data } = taskForm;
-    if (id) saveExistingTask(activePromo.id, activePromo.name, id, data);
-    else addTask(activePromo.id, activePromo.name, data);
+    // Only the fields the form actually edits — never forward whatever else happens to be
+    // sitting on taskForm (e.g. createdBy/createdAt, which older tasks may not have at all).
+    const { id, team, type, title, assignee, due, status, notes } = taskForm;
+    const data = { team, type, title, assignee, due, status, notes };
+    try {
+      if (id) await saveExistingTask(activePromo.id, activePromo.name, id, data);
+      else await addTask(activePromo.id, activePromo.name, data);
+    } catch (err) {
+      window.alert('Could not save this task: ' + err.message);
+      return;
+    }
     setTaskModal(false);
     setTaskForm(null);
   }
@@ -672,12 +684,20 @@ function PromotionPlanner({ user }) {
 
   async function savePromo() {
     if (!promoForm.name.trim() || !promoForm.launchDate) return;
-    const { id, ...data } = promoForm;
-    if (id) {
-      await saveExistingPromotion(id, data);
-    } else {
-      const newId = await createPromotion(data);
-      setActivePromoId(newId);
+    // Only the fields the form actually edits — never forward whatever else happens to be
+    // sitting on promoForm (e.g. createdBy/createdAt, which older promotions may not have).
+    const { id, name, launchDate, endDate, description } = promoForm;
+    const data = { name, launchDate, endDate, description };
+    try {
+      if (id) {
+        await saveExistingPromotion(id, data);
+      } else {
+        const newId = await createPromotion(data);
+        setActivePromoId(newId);
+      }
+    } catch (err) {
+      window.alert('Could not save this promotion: ' + err.message);
+      return;
     }
     setPromoModal(false);
     setPromoForm(null);
