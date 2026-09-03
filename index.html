@@ -720,7 +720,12 @@ function PromotionPlanner({ user }) {
   async function deletePromoClick() {
     if (!promoForm.id) return;
     if (!window.confirm(`Delete "${promoForm.name}" and all its tasks? This can't be undone, and it removes the promotion for everyone.`)) return;
-    await deletePromotion(promoForm.id, promoForm.name);
+    try {
+      await deletePromotion(promoForm.id, promoForm.name);
+    } catch (err) {
+      window.alert('Could not delete this promotion: ' + err.message);
+      return;
+    }
     setActivePromoId(null);
     setPromoModal(false);
     setPromoForm(null);
@@ -728,7 +733,12 @@ function PromotionPlanner({ user }) {
 
   async function toggleArchivePromo() {
     if (!promoForm.id) return;
-    await setPromoArchived(promoForm.id, promoForm.name, !promoForm.archived);
+    try {
+      await setPromoArchived(promoForm.id, promoForm.name, !promoForm.archived);
+    } catch (err) {
+      window.alert('Could not archive this promotion: ' + err.message);
+      return;
+    }
     if (!promoForm.archived) setActivePromoId(null); // archiving the active promotion: let the board pick a visible one
     setPromoModal(false);
     setPromoForm(null);
