@@ -393,6 +393,18 @@ function useOnlineStatus() {
   return online;
 }
 
+const MOBILE_QUERY = '(max-width: 720px)';
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.matchMedia(MOBILE_QUERY).matches : false));
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const handler = (ev) => setIsMobile(ev.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+  return isMobile;
+}
+
 function usePromotionsCollection() {
   const [docs, setDocs] = useState(null); // null = loading
   useEffect(() => {
@@ -450,6 +462,8 @@ function useActivityLog(active) {
 
 function PromotionPlanner({ user }) {
   const online = useOnlineStatus();
+  const isMobile = useIsMobile();
+  const pagePadding = isMobile ? '1rem' : '1.5rem 2rem';
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
 
@@ -761,16 +775,22 @@ function PromotionPlanner({ user }) {
 
   const header = e(
     'div',
-    { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1.25rem 2rem', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
+    {
+      style: {
+        display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center',
+        justifyContent: 'space-between', gap: isMobile ? '0.75rem' : undefined,
+        padding: isMobile ? '1rem' : '1.25rem 2rem', borderBottom: '1px solid var(--border)', background: 'var(--surface)',
+      },
+    },
     e(
       'div',
       null,
-      e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Promotion Planner'),
-      e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.125rem' } }, 'Keeping Acquisition, Retention and Website aligned on every launch')
+      e('h1', { className: 'font-display', style: { fontSize: isMobile ? '1.25rem' : '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Promotion Planner'),
+      !isMobile && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.125rem' } }, 'Keeping Acquisition, Retention and Website aligned on every launch')
     ),
     e(
       'div',
-      { style: { display: 'flex', alignItems: 'center', gap: '0.75rem' } },
+      { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.75rem' } },
       e(
         'span',
         {
@@ -788,8 +808,8 @@ function PromotionPlanner({ user }) {
       e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion'),
       e(
         'span',
-        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: '0.5rem', borderLeft: '1px solid var(--border)' } },
-        actorName,
+        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: isMobile ? 0 : '0.5rem', borderLeft: isMobile ? 'none' : '1px solid var(--border)' } },
+        e('span', { style: { maxWidth: '11rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, actorName),
         e('button', { onClick: () => signOut(auth).catch(() => {}), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 } }, 'Sign out')
       )
     )
@@ -803,7 +823,7 @@ function PromotionPlanner({ user }) {
 
   const viewToggle = e(
     'div',
-    { style: { display: 'flex', gap: '0.5rem', padding: '1rem 2rem 0' } },
+    { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
     e('button', { onClick: () => setView('board'), style: tabStyle(view === 'board') }, 'Board'),
     e('button', { onClick: () => setView('timeline'), style: tabStyle(view === 'timeline') }, 'Timeline'),
     e('button', { onClick: () => setView('activity'), style: tabStyle(view === 'activity') }, 'Activity')
@@ -815,7 +835,7 @@ function PromotionPlanner({ user }) {
     const visibleTabs = promotions.filter((p) => showArchived || !p.archived);
     const promoTabs = e(
       'div',
-      { style: { display: 'flex', gap: '0.75rem', padding: '1rem 2rem', overflowX: 'auto', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
+      { style: { display: 'flex', gap: '0.75rem', padding: isMobile ? '1rem' : '1rem 2rem', overflowX: 'auto', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
       visibleTabs.map((p) => {
         const active = p.id === activePromoId;
         const pctVal = progressFor(p);
@@ -869,70 +889,93 @@ function PromotionPlanner({ user }) {
         activeFilters.size > 0 && e('button', { onClick: () => setActiveFilters(new Set()), style: { fontSize: '0.75rem', padding: '0.375rem 0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Clear filter')
       );
 
-      const gridHeader = [e('div', { key: 'blank' })].concat(
-        STATUSES.map((s) => e('div', { key: s, style: { fontSize: '0.875rem', fontWeight: 600, padding: '0 0.5rem 0.25rem', color: 'var(--text-muted)' } }, s))
-      );
-
-      const gridRows = TEAMS.map((team) => {
-        const teamCell = e(
-          'div',
-          { key: `${team.id}-label`, style: { display: 'flex', alignItems: 'flex-start', paddingTop: '0.25rem', paddingRight: '0.5rem' } },
-          e('span', { style: { fontSize: '0.875rem', fontWeight: 600, padding: '0.5rem 0.75rem', borderRadius: '0.5rem', width: '100%', background: `rgba(${team.rgb}, 0.16)`, color: team.color } }, team.label)
-        );
-        const statusCells = STATUSES.map((status) => {
-          const cellTasks = activePromo.tasks.filter((t) => t.team === team.id && t.status === status);
-          const cards = cellTasks.map((task) => {
-            const type = TYPES.find((t) => t.id === task.type);
-            const dim = activeFilters.size > 0 && !activeFilters.has(task.type);
-            return e(
-              'div',
-              {
-                key: task.id,
-                draggable: true,
-                onDragStart: () => setDraggedTaskId(task.id),
-                onDragEnd: () => setDraggedTaskId(null),
-                onClick: () => openEditTask(task),
-                className: `task-card${draggedTaskId === task.id ? ' dragging' : ''}`,
-                style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', opacity: dim ? 0.3 : 1, border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: team.color, borderLeftStyle: 'solid' },
-              },
-              e('div', { style: { fontSize: '0.75rem', fontWeight: 500, marginBottom: '0.25rem', color: PURPLE_TEXT } }, type ? type.label : task.type),
-              e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', lineHeight: 1.35 } }, task.title),
-              status === 'Reports' && task.notes && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.35 } }, task.notes),
-              e(
-                'div',
-                { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' } },
-                e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.assignee || 'Unassigned'),
-                e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.due ? formatDate(task.due) : '')
-              )
-            );
-          });
+      function renderCell(team, status, minHeight) {
+        const cellTasks = activePromo.tasks.filter((t) => t.team === team.id && t.status === status);
+        const cards = cellTasks.map((task) => {
+          const type = TYPES.find((t) => t.id === task.type);
+          const dim = activeFilters.size > 0 && !activeFilters.has(task.type);
           return e(
             'div',
             {
-              key: status,
-              onDragOver: (ev) => ev.preventDefault(),
-              onDrop: () => handleDrop(team.id, status),
-              style: { borderRadius: '0.5rem', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'var(--surface-alt)', minHeight: '116px' },
+              key: task.id,
+              draggable: true,
+              onDragStart: () => setDraggedTaskId(task.id),
+              onDragEnd: () => setDraggedTaskId(null),
+              onClick: () => openEditTask(task),
+              className: `task-card${draggedTaskId === task.id ? ' dragging' : ''}`,
+              style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', opacity: dim ? 0.3 : 1, border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: team.color, borderLeftStyle: 'solid' },
             },
-            ...cards,
-            e('button', { onClick: () => openNewTask(team.id, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reports' ? '+ Add result' : '+ Add task')
+            e('div', { style: { fontSize: '0.75rem', fontWeight: 500, marginBottom: '0.25rem', color: PURPLE_TEXT } }, type ? type.label : task.type),
+            e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', lineHeight: 1.35 } }, task.title),
+            status === 'Reports' && task.notes && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.35 } }, task.notes),
+            e(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' } },
+              e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.assignee || 'Unassigned'),
+              e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.due ? formatDate(task.due) : '')
+            )
           );
         });
-        return e(React.Fragment, { key: team.id }, teamCell, ...statusCells);
-      });
+        return e(
+          'div',
+          {
+            key: status,
+            onDragOver: (ev) => ev.preventDefault(),
+            onDrop: () => handleDrop(team.id, status),
+            style: { borderRadius: '0.5rem', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
+          },
+          ...cards,
+          e('button', { onClick: () => openNewTask(team.id, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reports' ? '+ Add result' : '+ Add task')
+        );
+      }
+
+      let board;
+      if (isMobile) {
+        // A grid this wide doesn't fit a phone screen — stack team sections, each with its
+        // statuses listed vertically instead of laid out as columns.
+        board = e(
+          'div',
+          null,
+          TEAMS.map((team) => e(
+            'div',
+            { key: team.id, style: { marginBottom: '1.5rem' } },
+            e('div', { style: { fontSize: '0.875rem', fontWeight: 600, padding: '0.5rem 0.75rem', borderRadius: '0.5rem', background: `rgba(${team.rgb}, 0.16)`, color: team.color, marginBottom: '0.75rem' } }, team.label),
+            STATUSES.map((status) => e(
+              'div',
+              { key: status, style: { marginBottom: '0.75rem' } },
+              e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.375rem' } }, status),
+              renderCell(team, status, '56px')
+            ))
+          ))
+        );
+      } else {
+        const gridHeader = [e('div', { key: 'blank' })].concat(
+          STATUSES.map((s) => e('div', { key: s, style: { fontSize: '0.875rem', fontWeight: 600, padding: '0 0.5rem 0.25rem', color: 'var(--text-muted)' } }, s))
+        );
+        const gridRows = TEAMS.map((team) => {
+          const teamCell = e(
+            'div',
+            { key: `${team.id}-label`, style: { display: 'flex', alignItems: 'flex-start', paddingTop: '0.25rem', paddingRight: '0.5rem' } },
+            e('span', { style: { fontSize: '0.875rem', fontWeight: 600, padding: '0.5rem 0.75rem', borderRadius: '0.5rem', width: '100%', background: `rgba(${team.rgb}, 0.16)`, color: team.color } }, team.label)
+          );
+          const statusCells = STATUSES.map((status) => renderCell(team, status));
+          return e(React.Fragment, { key: team.id }, teamCell, ...statusCells);
+        });
+        board = e('div', { style: { display: 'grid', gap: '0.625rem', gridTemplateColumns: '140px repeat(5, 1fr)' } }, ...gridHeader, ...gridRows);
+      }
 
       promoDetail = e(
         'div',
-        { style: { padding: '1.5rem 2rem' } },
+        { style: { padding: isMobile ? '1rem' : '1.5rem 2rem' } },
         e(
           'div',
-          { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1.25rem' } },
+          { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1.25rem' } },
           e(
             'div',
             null,
             e(
               'div',
-              { style: { display: 'flex', alignItems: 'center', gap: '0.625rem' } },
+              { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.625rem' } },
               e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
               activePromo.archived && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived'),
               e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit')
@@ -941,10 +984,10 @@ function PromotionPlanner({ user }) {
           ),
           e(
             'div',
-            { style: { textAlign: 'right', flexShrink: 0, marginLeft: '1rem' } },
+            { style: { textAlign: isMobile ? 'left' : 'right', flexShrink: 0, marginLeft: isMobile ? 0 : '1rem' } },
             e(
               'div',
-              { style: { display: 'flex', gap: '1.25rem', justifyContent: 'flex-end' } },
+              { style: { display: 'flex', gap: '1.25rem', justifyContent: isMobile ? 'flex-start' : 'flex-end' } },
               e(
                 'div',
                 null,
@@ -962,12 +1005,12 @@ function PromotionPlanner({ user }) {
           )
         ),
         typeFilters,
-        e('div', { style: { display: 'grid', gap: '0.625rem', gridTemplateColumns: '140px repeat(5, 1fr)' } }, ...gridHeader, ...gridRows),
+        board,
         e(
           'div',
-          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.5rem' } },
-          e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit."),
-          e('button', { onClick: resetData, style: { fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0, marginLeft: '1rem', background: 'none', border: 'none', cursor: 'pointer' } }, 'Reset sample data')
+          { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '1.5rem' } },
+          e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit."),
+          e('button', { onClick: resetData, style: { fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' } }, 'Reset sample data')
         )
       );
     }
@@ -1007,7 +1050,7 @@ function PromotionPlanner({ user }) {
 
     timelineSection = e(
       'div',
-      { style: { padding: '1.5rem 2rem' } },
+      { style: { padding: isMobile ? '1rem' : '1.5rem 2rem' } },
       e('div', { style: { position: 'relative', marginBottom: '1.5rem', height: '18px' } }, ...tickEls),
       e(
         'div',
@@ -1032,7 +1075,7 @@ function PromotionPlanner({ user }) {
   if (view === 'activity') {
     activitySection = e(
       'div',
-      { style: { padding: '1.5rem 2rem', maxWidth: '48rem' } },
+      { style: { padding: isMobile ? '1rem' : '1.5rem 2rem', maxWidth: '48rem' } },
       e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, 'Who created and changed what, most recent first — the last 100 changes across the whole board.'),
       !activityEntries && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
       activityEntries && activityEntries.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'No activity yet.'),
