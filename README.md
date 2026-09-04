@@ -1,9 +1,20 @@
 # Promotion Planner
 
-A shared planning tool for the Acquisition, Retention, and Website teams:
-a kanban and timeline board for marketing promotions (briefing through
-launch to results reporting), an Emails module for the day-to-day email
-calendar and briefing pipeline, and Paid Media / CRO/UX test trackers.
+A shared planning tool for the Acquisition, Retention, and Website teams.
+Navigation is organized by team:
+
+- **Promotions** — cross-team, since every promotion involves all three
+  teams: a kanban board (briefing through launch to results reporting)
+  and a timeline.
+- **Acquisition** — Paid Media Tests: a status board and a timeline.
+- **Retention** — Emails: a status board and a month calendar.
+- **Website** — CRO/UX Tests: a status board and a timeline.
+- **Activity** — a live change log across everything above.
+
+Each timeline (Promotions, Paid Media, CRO/UX) uses the same visual
+language: a light bar for the prep/build period, a solid bar for when
+it's actually live, and separate launch/end markers — so "still being
+prepped" vs. "actually running" is always visually distinct.
 
 ## Live board
 
@@ -114,23 +125,27 @@ by these rules server-side, not just hidden in the UI.
   `sendDate`, `status` — Briefing/Testing/Approved/Scheduled/Sent/Reported —
   `assignee`, `relatedPromoId` (optional, links it to a promotion),
   `hubspotLink` (optional), `notes`, plus the same attribution fields).
-  Shown under the **Emails** tab as a status board (drag between columns)
-  or a month calendar (click a day to add one, click a chip to edit it).
+  Shown under the **Retention** section as a status board (drag between
+  columns) or a month calendar (click a day to add one, click a chip to
+  edit it).
   This is where the email team's planning calendar and Trello-style
   briefing status live — HubSpot itself stays the tool that builds and
   sends the email; `hubspotLink` just points at it.
 - `paidTests/{testId}` and `croTests/{testId}` — one document per
   experiment (Paid Media and CRO/UX respectively), each shown under its
-  own tab as a status board. Both are "hypothesis → variant → result"
-  shaped but with different fields and stages, driven by the
-  `TEST_TRACKERS` config in `index.html` rather than duplicated code —
-  add a third tracker (e.g. QA/stability) by adding a new entry there,
-  not by copying a whole module. Paid Media: `name`, `channel`,
-  `hypothesis`, `variants`, `startDate`, `endDate`, `budget`, `assignee`,
-  `outcome`, `result`, status Planned → Live → Analyzing → Concluded.
-  CRO/UX: `name`, `area`, `hypothesis`, `variant`, `metric`, `startDate`,
-  `endDate`, `assignee`, `outcome`, `result`, status Idea → Building →
-  Live → Analyzing → Concluded.
+  own team section as a status board or a timeline. Both are
+  "hypothesis → variant → result" shaped but with different fields and
+  stages, driven by the `TEST_TRACKERS` config in `index.html` rather
+  than duplicated code — add a third tracker (e.g. QA/stability) by
+  adding a new entry there, not by copying a whole module. Paid Media:
+  `name`, `channel`, `hypothesis`, `variants`, `startDate`, `endDate`,
+  `budget`, `assignee`, `outcome`, `result`, status Planned → Live →
+  Analyzing → Concluded. CRO/UX: `name`, `area`, `hypothesis`,
+  `variant`, `metric`, `startDate`, `endDate`, `assignee`, `outcome`,
+  `result`, status Idea → Building → Live → Analyzing → Concluded. On
+  the timeline, the "prep" bar runs from when the test was logged
+  (`createdAt`) to `startDate`, and "live" runs `startDate` to `endDate`
+  (or a 14-day estimate if `endDate` isn't set yet).
 - `activity/{entryId}` — an append-only change log: one document per create,
   edit, move, or delete anywhere on the board (`action`, `by`, `at`,
   `promoName`, `taskTitle`, `detail`). Shown newest-first under the

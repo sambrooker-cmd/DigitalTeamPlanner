@@ -390,11 +390,26 @@ function promoStageLabel(promo) {
   return STATUSES[idx];
 }
 
-function computeRange(promotions) {
+// Same {start, launch, end, hasRealEnd} shape as taskDates, for a paidTests/croTests item.
+// "Prepping" runs from when the test was logged (createdAt) to its start date; "live testing"
+// runs start date to end date (or a 14-day estimate when no end date is set yet).
+function testDates(item) {
+  const liveStart = new Date(item.startDate);
+  const prepStartRaw = item.createdAt && typeof item.createdAt.toDate === 'function' ? item.createdAt.toDate() : liveStart;
+  const start = prepStartRaw.getTime() < liveStart.getTime() ? prepStartRaw : liveStart;
+  const hasRealEnd = !!item.endDate;
+  const end = hasRealEnd ? new Date(item.endDate) : new Date(liveStart.getTime() + 14 * 86400000);
+  return { start, launch: liveStart, end, hasRealEnd };
+}
+
+// `getDates(item)` returns at least {start, end} — the range that should be visible, padded 5
+// days each side. Promotions pass reportEnd as `end` here (room for the Reports stage); tests
+// just use their own end/estimate.
+function computeRange(items, getDates) {
   const all = [new Date()];
-  promotions.forEach((p) => {
-    const { start, reportEnd } = taskDates(p);
-    all.push(start, reportEnd);
+  items.forEach((it) => {
+    const { start, end } = getDates(it);
+    all.push(start, end);
   });
   const min = new Date(Math.min(...all.map((d) => d.getTime())) - 5 * 86400000);
   const max = new Date(Math.max(...all.map((d) => d.getTime())) + 5 * 86400000);
@@ -696,16 +711,26 @@ function PromotionPlanner({ user }) {
     }
   }, [promotions]);
 
-  const [view, setView] = useState('board');
-  const activityEntries = useActivityLog(view === 'activity');
+  // Top-level navigation is by team; each section remembers its own board/timeline(/calendar) sub-view.
+  const [section, setSection] = useState('promotions'); // 'promotions' | 'acquisition' | 'retention' | 'website' | 'activity'
+  const [promoView, setPromoView] = useState('board'); // 'board' | 'timeline'
+  const [acqView, setAcqView] = useState('board'); // 'board' | 'timeline' (Paid Media)
+  const [webView, setWebView] = useState('board'); // 'board' | 'timeline' (CRO/UX)
+  const activityEntries = useActivityLog(section === 'activity');
   const timelineScrollRef = useRef(null);
   useDragScroll(timelineScrollRef);
   useEffect(() => {
-    if (view !== 'timeline' || !timelineScrollRef.current) return;
-    const r = computeRange(timelinePromotions);
+    if (!timelineScrollRef.current) return;
+    let items = null;
+    let getDates = null;
+    if (section === 'promotions' && promoView === 'timeline') { items = timelinePromotions; getDates = taskDates; }
+    else if (section === 'acquisition' && acqView === 'timeline') { items = paidTests || []; getDates = testDates; }
+    else if (section === 'website' && webView === 'timeline') { items = croTests || []; getDates = testDates; }
+    else return;
+    const r = computeRange(items, getDates);
     const dayWidth = isMobile ? 22 : 34;
     timelineScrollRef.current.scrollLeft = Math.max(dayOffsetPx(new Date(), r.min, dayWidth) - 80, 0);
-  }, [view, timelinePromotions, isMobile]);
+  }, [section, promoView, acqView, webView, timelinePromotions, paidTests, croTests, isMobile]);
   const [showArchived, setShowArchived] = useState(false);
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
@@ -1156,9 +1181,6 @@ function PromotionPlanner({ user }) {
     }
   }
 
-  const range = view === 'timeline' ? computeRange(timelinePromotions) : null;
-  const ticks = range ? monthTicks(range.min, range.max) : [];
-  const today = new Date();
 
   const header = e(
     'div',
@@ -1208,19 +1230,56 @@ function PromotionPlanner({ user }) {
       : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
   }
 
-  const viewToggle = e(
+  function sectionTabStyle(active) {
+    return active
+      ? { padding: '0.5rem 1rem', borderRadius: '0.5rem', fontSize: '0.9375rem', fontWeight: 600, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
+      : { padding: '0.5rem 1rem', borderRadius: '0.5rem', fontSize: '0.9375rem', fontWeight: 600, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
+  }
+
+  const sectionTabs = e(
     'div',
     { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
-    e('button', { onClick: () => setView('board'), style: tabStyle(view === 'board') }, 'Board'),
-    e('button', { onClick: () => setView('timeline'), style: tabStyle(view === 'timeline') }, 'Timeline'),
-    e('button', { onClick: () => setView('emails'), style: tabStyle(view === 'emails') }, 'Emails'),
-    e('button', { onClick: () => setView('paid'), style: tabStyle(view === 'paid') }, 'Paid Media Tests'),
-    e('button', { onClick: () => setView('cro'), style: tabStyle(view === 'cro') }, 'CRO/UX Tests'),
-    e('button', { onClick: () => setView('activity'), style: tabStyle(view === 'activity') }, 'Activity')
+    e('button', { onClick: () => setSection('promotions'), style: sectionTabStyle(section === 'promotions') }, 'Promotions'),
+    e('button', { onClick: () => setSection('acquisition'), style: sectionTabStyle(section === 'acquisition') }, 'Acquisition'),
+    e('button', { onClick: () => setSection('retention'), style: sectionTabStyle(section === 'retention') }, 'Retention'),
+    e('button', { onClick: () => setSection('website'), style: sectionTabStyle(section === 'website') }, 'Website'),
+    e('button', { onClick: () => setSection('activity'), style: sectionTabStyle(section === 'activity') }, 'Activity')
   );
 
+  const subTabPadding = isMobile ? '0.75rem 1rem 0' : '0.75rem 2rem 0';
+  let subTabs = null;
+  if (section === 'promotions') {
+    subTabs = e(
+      'div',
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      e('button', { onClick: () => setPromoView('board'), style: tabStyle(promoView === 'board') }, 'Board'),
+      e('button', { onClick: () => setPromoView('timeline'), style: tabStyle(promoView === 'timeline') }, 'Timeline')
+    );
+  } else if (section === 'acquisition') {
+    subTabs = e(
+      'div',
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      e('button', { onClick: () => setAcqView('board'), style: tabStyle(acqView === 'board') }, 'Board'),
+      e('button', { onClick: () => setAcqView('timeline'), style: tabStyle(acqView === 'timeline') }, 'Timeline')
+    );
+  } else if (section === 'retention') {
+    subTabs = e(
+      'div',
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      e('button', { onClick: () => setEmailView('board'), style: tabStyle(emailView === 'board') }, 'Board'),
+      e('button', { onClick: () => setEmailView('calendar'), style: tabStyle(emailView === 'calendar') }, 'Calendar')
+    );
+  } else if (section === 'website') {
+    subTabs = e(
+      'div',
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      e('button', { onClick: () => setWebView('board'), style: tabStyle(webView === 'board') }, 'Board'),
+      e('button', { onClick: () => setWebView('timeline'), style: tabStyle(webView === 'timeline') }, 'Timeline')
+    );
+  }
+
   let boardSection = null;
-  if (view === 'board') {
+  if (section === 'promotions' && promoView === 'board') {
     const archivedCount = promotions.filter((p) => p.archived).length;
     const visibleTabs = promotions.filter((p) => showArchived || !p.archived);
     const promoTabs = e(
@@ -1409,56 +1468,61 @@ function PromotionPlanner({ user }) {
     boardSection = e(React.Fragment, null, promoTabs, promoDetail);
   }
 
-  let timelineSection = null;
-  if (view === 'timeline' && range) {
+  // Generic timeline renderer shared by Promotions, Paid Media, and CRO/UX — each just
+  // supplies its own items/date-getter/labels. The visual mechanics (frozen name column,
+  // fixed day-width scale, drag-to-pan, today line, prep vs. live bar segments) are identical.
+  function renderTimelineSection(cfg) {
     const dayWidth = isMobile ? 22 : 34;
     const labelWidth = isMobile ? 104 : 168;
+    const range = computeRange(cfg.items, cfg.getRangeDates || cfg.getDates);
+    const ticks = monthTicks(range.min, range.max);
+    const today = new Date();
     const contentWidth = Math.max(dayOffsetPx(range.max, range.min, dayWidth), 1);
     const todayLeft = dayOffsetPx(today, range.min, dayWidth);
     const labelCellStyle = { position: 'sticky', left: 0, zIndex: 3, flexShrink: 0, width: `${labelWidth}px`, background: 'var(--bg)', paddingRight: '0.75rem' };
 
     const tickEls = ticks.map((t) => e('div', { key: t.toISOString(), style: { position: 'absolute', fontSize: '0.75rem', color: 'var(--text-muted)', left: `${dayOffsetPx(t, range.min, dayWidth)}px` } }, t.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })));
 
-    const rows = timelinePromotions.map((p) => {
-      const { start, launch, end, hasRealEnd } = taskDates(p);
-      const stageLabel = promoStageLabel(p);
+    const rows = cfg.items.map((item) => {
+      const { start, launch, end, hasRealEnd } = cfg.getDates(item);
+      const name = cfg.getName(item);
       const startLeft = dayOffsetPx(start, range.min, dayWidth);
       const launchLeft = dayOffsetPx(launch, range.min, dayWidth);
       const endLeft = dayOffsetPx(end, range.min, dayWidth);
       return e(
         'div',
         {
-          key: p.id,
+          key: item.id,
           role: 'button',
           tabIndex: 0,
-          onClick: () => { setActivePromoId(p.id); setView('board'); },
-          onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setActivePromoId(p.id); setView('board'); } },
+          onClick: () => cfg.onOpenItem(item),
+          onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); cfg.onOpenItem(item); } },
           style: { display: 'flex', alignItems: 'center', marginBottom: '1.5rem', cursor: 'pointer' },
         },
         e(
           'div',
-          { style: labelCellStyle, title: p.name },
-          e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, p.name),
-          e('div', { style: { marginTop: '0.25rem' } }, e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, stageLabel))
+          { style: labelCellStyle, title: name },
+          e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, name),
+          e('div', { style: { marginTop: '0.25rem' } }, e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, cfg.getStage(item)))
         ),
         e(
           'div',
           { style: { position: 'relative', height: '24px', width: `${contentWidth}px`, flexShrink: 0, borderRadius: '999px', background: 'var(--surface-alt)' } },
           e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: PURPLE_LIGHT } }),
           e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchLeft}px`, width: `${Math.max(endLeft - launchLeft, 4)}px`, background: PURPLE } }),
-          e('div', { title: `Launch ${formatDate(p.launchDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `${launchLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
-          hasRealEnd && e('div', { title: `Ends ${formatDate(p.endDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `${endLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } })
+          e('div', { title: `${cfg.launchTitle} ${formatDate(launch)}`, style: { position: 'absolute', borderRadius: '999px', left: `${launchLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
+          hasRealEnd && e('div', { title: `${cfg.endTitle} ${formatDate(end)}`, style: { position: 'absolute', borderRadius: '999px', left: `${endLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } })
         )
       );
     });
 
-    timelineSection = e(
+    return e(
       'div',
       { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem' } },
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' } },
-        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Drag left or right to see promotions outside the current window. The promotion name stays put.'),
+        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Drag left or right to see items outside the current window. The name stays put.'),
         e('button', {
           onClick: () => { if (timelineScrollRef.current) timelineScrollRef.current.scrollLeft = todayLeft - 80; },
           style: { fontSize: '0.75rem', color: PURPLE_TEXT, background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0, marginLeft: '1rem' },
@@ -1480,25 +1544,43 @@ function PromotionPlanner({ user }) {
             'div',
             { style: { position: 'relative', paddingTop: '4px' } },
             e('div', { style: { position: 'absolute', top: 0, bottom: 0, width: '1px', left: `${labelWidth + todayLeft}px`, background: TODAY_COLOR, zIndex: 1 } }),
-            ...rows
+            rows.length ? rows : e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, cfg.emptyLabel)
           )
         )
       ),
       e(
         'div',
         { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '1rem', marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' } },
-        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '999px', background: PURPLE_LIGHT } }), 'Prep (briefing to review)'),
-        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '999px', background: PURPLE } }), 'Live (no end date set: estimated at 14 days)'),
-        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '999px', background: PURPLE_DARK } }), 'Launch date'),
-        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '999px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } }), 'End date'),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '999px', background: PURPLE_LIGHT } }), cfg.prepLabel),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '999px', background: PURPLE } }), cfg.liveLabel),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '999px', background: PURPLE_DARK } }), cfg.launchTitle),
+        e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '999px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } }), cfg.endTitle),
         e('span', { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } }, e('span', { style: { display: 'inline-block', width: '1px', height: '12px', background: TODAY_COLOR } }), 'Today')
       ),
-      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, "Click a promotion to open its board. Stage shown is the least-advanced team, so you can spot who's behind.")
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, cfg.footerNote)
     );
   }
 
+  let timelineSection = null;
+  if (section === 'promotions' && promoView === 'timeline') {
+    timelineSection = renderTimelineSection({
+      items: timelinePromotions,
+      getDates: taskDates,
+      getRangeDates: (p) => { const d = taskDates(p); return { start: d.start, end: d.reportEnd }; },
+      getName: (p) => p.name,
+      getStage: promoStageLabel,
+      onOpenItem: (p) => { setActivePromoId(p.id); setSection('promotions'); setPromoView('board'); },
+      prepLabel: 'Prep (briefing to review)',
+      liveLabel: 'Live (no end date set: estimated at 14 days)',
+      launchTitle: 'Launch',
+      endTitle: 'Ends',
+      emptyLabel: 'No promotions yet.',
+      footerNote: "Click a promotion to open its board. Stage shown is the least-advanced team, so you can spot who's behind.",
+    });
+  }
+
   let emailsSection = null;
-  if (view === 'emails') {
+  if (section === 'retention') {
     function renderEmailCard(email) {
       const promo = email.relatedPromoId ? promotions.find((p) => p.id === email.relatedPromoId) : null;
       return e(
@@ -1630,12 +1712,7 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem' } },
-        e(
-          'div',
-          { style: { display: 'flex', gap: '0.5rem' } },
-          e('button', { onClick: () => setEmailView('board'), style: tabStyle(emailView === 'board') }, 'Board'),
-          e('button', { onClick: () => setEmailView('calendar'), style: tabStyle(emailView === 'calendar') }, 'Calendar')
-        ),
+        e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, 'Emails'),
         e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
       ),
       !emails && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
@@ -1646,9 +1723,10 @@ function PromotionPlanner({ user }) {
   }
 
   let testTrackerSection = null;
-  if (view === 'paid' || view === 'cro') {
-    const config = view === 'paid' ? TEST_TRACKERS.paid : TEST_TRACKERS.cro;
-    const items = view === 'paid' ? paidTests : croTests;
+  if (section === 'acquisition' || section === 'website') {
+    const config = section === 'acquisition' ? TEST_TRACKERS.paid : TEST_TRACKERS.cro;
+    const items = section === 'acquisition' ? paidTests : croTests;
+    const subView = section === 'acquisition' ? acqView : webView;
 
     function renderTestCard(item) {
       return e(
@@ -1715,23 +1793,38 @@ function PromotionPlanner({ user }) {
       );
     }
 
+    const testTimeline = (items && subView === 'timeline') ? renderTimelineSection({
+      items,
+      getDates: testDates,
+      getName: (it) => it.name,
+      getStage: (it) => it.status,
+      onOpenItem: (it) => openEditTest(config, it),
+      prepLabel: 'Prepping',
+      liveLabel: 'Live testing (no end date set: estimated at 14 days)',
+      launchTitle: 'Starts',
+      endTitle: 'Ends',
+      emptyLabel: `No ${config.label.toLowerCase()} yet.`,
+      footerNote: 'Click a test to edit it.',
+    }) : null;
+
     testTrackerSection = e(
       'div',
-      { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem' } },
+      { style: subView === 'board' ? { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem' } : undefined },
       e(
         'div',
-        { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem' } },
+        { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem', padding: subView === 'timeline' ? (isMobile ? '1.5rem 1rem 0' : '1.5rem 2rem 0') : undefined } },
         e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, config.label),
         e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
       ),
-      !items && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
-      items && testBoard,
-      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap a test to edit it." : "Drag cards between columns, or click one to edit it.")
+      !items && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)', padding: subView === 'timeline' ? (isMobile ? '0 1rem' : '0 2rem') : undefined } }, 'Loading…'),
+      items && subView === 'board' && testBoard,
+      items && subView === 'board' && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap a test to edit it." : "Drag cards between columns, or click one to edit it."),
+      items && subView === 'timeline' && testTimeline
     );
   }
 
   let activitySection = null;
-  if (view === 'activity') {
+  if (section === 'activity') {
     activitySection = e(
       'div',
       { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem', maxWidth: '48rem' } },
@@ -1887,7 +1980,8 @@ function PromotionPlanner({ user }) {
     'div',
     { style: { width: '100%', minHeight: '100vh', background: 'var(--bg)', fontFamily: 'Arial, Helvetica, sans-serif' } },
     header,
-    viewToggle,
+    sectionTabs,
+    subTabs,
     boardSection,
     timelineSection,
     emailsSection,
