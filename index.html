@@ -328,6 +328,11 @@ function seedPromotions() {
 }
 
 function Modal({ title, onClose, children }) {
+  useEffect(() => {
+    const onKeyDown = (ev) => { if (ev.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
   return e(
     'div',
     {
@@ -1180,30 +1185,6 @@ function PromotionPlanner({ user }) {
     setDraggedTestId(null);
   }
 
-  async function resetData() {
-    if (!window.confirm('Reset sample data? This replaces everything currently on the board for everyone.')) return;
-    setBusy(true);
-    try {
-      const existing = await getDocs(collection(fdb, 'promotions'));
-      for (const d of existing.docs) {
-        const tasksSnap = await getDocs(collection(fdb, 'promotions', d.id, 'tasks'));
-        for (const t of tasksSnap.docs) await deleteDoc(doc(fdb, 'promotions', d.id, 'tasks', t.id));
-        await deleteDoc(doc(fdb, 'promotions', d.id));
-      }
-      const seed = seedPromotions();
-      for (const promo of seed) {
-        const { tasks, id, ...meta } = promo;
-        await setDoc(doc(fdb, 'promotions', id), meta);
-        for (const task of tasks) {
-          const { id: taskId, ...taskData } = task;
-          await setDoc(doc(fdb, 'promotions', id, 'tasks', taskId), taskData);
-        }
-      }
-      await logActivity({ action: 'board_reset' });
-      setActivePromoId(seed[0].id);
-    } finally { setBusy(false); }
-  }
-
   function handleDrop(team, status) {
     if (!draggedTaskId || !activePromo) return;
     const task = activePromo.tasks.find((t) => t.id === draggedTaskId);
@@ -1279,6 +1260,10 @@ function PromotionPlanner({ user }) {
   async function savePromo() {
     if (!promoForm.name.trim() || !promoForm.launchDate) {
       window.alert('Promotion name and launch date are required.');
+      return;
+    }
+    if (promoForm.endDate && promoForm.endDate < promoForm.launchDate) {
+      window.alert("End date can't be before the launch date.");
       return;
     }
     // Only the fields the form actually edits — never forward whatever else happens to be
@@ -1666,12 +1651,7 @@ function PromotionPlanner({ user }) {
         ),
         typeFilters,
         board,
-        e(
-          'div',
-          { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '1.5rem' } },
-          e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit."),
-          e('button', { onClick: resetData, style: { fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' } }, 'Reset sample data')
-        )
+        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit.")
       );
     }
 
@@ -2259,7 +2239,7 @@ function PromotionPlanner({ user }) {
           'select',
           { style: inputStyle, value: emailForm.relatedPromoId || '', onChange: (ev) => setEmailForm({ ...emailForm, relatedPromoId: ev.target.value }) },
           e('option', { value: '' }, 'None'),
-          promotions.map((p) => e('option', { key: p.id, value: p.id }, p.name))
+          promotions.map((p) => e('option', { key: p.id, value: p.id }, p.archived ? `${p.name} (archived)` : p.name))
         ))
       ),
       e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' })),
@@ -2284,7 +2264,7 @@ function PromotionPlanner({ user }) {
     const config = findTrackerConfig(testForm.__collection);
     testModalEl = e(
       Modal,
-      { title: testForm.id ? `Edit test` : `New test`, onClose: () => { setTestModal(false); setTestForm(null); } },
+      { title: `${testForm.id ? 'Edit' : 'New'} ${config.label.replace(/s$/, '')}`, onClose: () => { setTestModal(false); setTestForm(null); } },
       ...config.fields.map((f) => e(Field, { key: f.key, label: f.label, required: f.required }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users))),
       e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
       testForm.id && e(
