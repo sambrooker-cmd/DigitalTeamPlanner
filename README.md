@@ -41,9 +41,15 @@ top-level tab:
 
 The header also has a **search box** that reaches everything at once —
 promotions, individual tasks, emails, and both test trackers — regardless
-of which tab you're on; picking a result jumps straight there. A **theme
-button** next to it cycles System → Light → Dark and remembers the choice
-per-browser (dark mode otherwise just follows your OS setting on its own).
+of which tab you're on; picking a result jumps straight there. Next to it,
+a **reminder bell** (🔔) shows a count of anything assigned to you that's
+due today or overdue and still open — click it for the list, click an item
+to jump straight to it. This is a passive, in-app reminder only: it's just
+`My Work` filtered down, so it only reflects reality while you actually
+have the app open — nothing is emailed or pushed to you outside the tab.
+A **theme button** next to it cycles System → Light → Dark and remembers
+the choice per-browser (dark mode otherwise just follows your OS setting
+on its own).
 
 Each timeline (Promotions, Paid Media, CRO/UX) uses the same visual
 language: a light bar for the prep/build period, a solid bar for when

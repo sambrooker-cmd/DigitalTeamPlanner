@@ -274,6 +274,17 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
 
+// What counts as "still open" (worth a reminder) per item type — a task marked Live/Reports,
+// an email that's Sent/Reported, or a test that's already Live/Analyzing/Concluded has moved
+// past the point its due date was tracking, so a past due date there isn't a problem anymore.
+function isOpenForReminder(type, status) {
+  if (type === 'task') return status !== 'Live' && status !== 'Reports';
+  if (type === 'email') return status !== 'Sent' && status !== 'Reported';
+  if (type === 'paid') return status === 'Planned';
+  if (type === 'cro') return status === 'Idea';
+  return true;
+}
+
 // --- Calendar month-grid helpers (all local-time; never round-trips sendDate strings
 // through `new Date()`, so there's no UTC/local day-shift risk when matching them up). ---
 function startOfMonth(d) {
@@ -1523,7 +1534,7 @@ function PromotionPlanner({ user }) {
         if (t.assignee !== email) return;
         const team = TEAMS.find((tm) => tm.id === t.team);
         items.push({
-          id: `mytask-${t.id}`, title: t.title, context: p.name, due: t.due, status: t.status,
+          id: `mytask-${t.id}`, type: 'task', title: t.title, context: p.name, due: t.due, status: t.status,
           badge: team ? { label: team.label, color: team.color, bg: `rgba(${team.rgb}, 0.16)` } : ROLLUP_KINDS.promotion,
           onOpen: () => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); },
         });
@@ -1532,21 +1543,21 @@ function PromotionPlanner({ user }) {
     (emails || []).forEach((em) => {
       if (em.assignee !== email) return;
       items.push({
-        id: `myemail-${em.id}`, title: em.subject, context: 'Email', due: em.sendDate, status: em.status, badge: ROLLUP_KINDS.email,
+        id: `myemail-${em.id}`, type: 'email', title: em.subject, context: 'Email', due: em.sendDate, status: em.status, badge: ROLLUP_KINDS.email,
         onOpen: () => { setSection('boards'); setActiveBoard('retention'); setEmailView('board'); openEditEmail(em); },
       });
     });
     (paidTests || []).forEach((t) => {
       if (t.assignee !== email) return;
       items.push({
-        id: `mypaid-${t.id}`, title: t.name, context: 'Paid Media Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.paid,
+        id: `mypaid-${t.id}`, type: 'paid', title: t.name, context: 'Paid Media Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.paid,
         onOpen: () => { setSection('boards'); setActiveBoard('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
       });
     });
     (croTests || []).forEach((t) => {
       if (t.assignee !== email) return;
       items.push({
-        id: `mycro-${t.id}`, title: t.name, context: 'CRO/UX Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.cro,
+        id: `mycro-${t.id}`, type: 'cro', title: t.name, context: 'CRO/UX Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.cro,
         onOpen: () => { setSection('boards'); setActiveBoard('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
       });
     });
@@ -1557,6 +1568,14 @@ function PromotionPlanner({ user }) {
     });
     return items;
   }, [timelinePromotions, emails, paidTests, croTests, user.email]);
+
+  // The header's reminder bell: just myWorkItems narrowed to "due today or overdue, and still
+  // open" — nothing new stored or computed server-side, so it only ever reflects what's true the
+  // moment someone has the app open (see README for the passive-vs-active reminder tradeoff).
+  const dueReminders = useMemo(() => {
+    const todayKey = toDateKey(new Date());
+    return myWorkItems.filter((it) => it.due && (it.due === todayKey || daysUntil(it.due) < 0) && isOpenForReminder(it.type, it.status));
+  }, [myWorkItems]);
 
   // A handful of headline numbers pulled from data already loaded above — nothing new to
   // maintain, no separate reporting step. "Decided" tests are Win/Loss only; TBD/Inconclusive
@@ -1665,6 +1684,16 @@ function PromotionPlanner({ user }) {
     setGlobalSearchQuery('');
     setGlobalSearchOpen(false);
   }
+
+  const [remindersOpen, setRemindersOpen] = useState(false);
+  const remindersRef = useRef(null);
+  useEffect(() => {
+    function onDocMouseDown(ev) {
+      if (remindersRef.current && !remindersRef.current.contains(ev.target)) setRemindersOpen(false);
+    }
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, []);
 
   const [activePromoId, setActivePromoId] = useState(null);
   useEffect(() => {
@@ -2410,6 +2439,53 @@ function PromotionPlanner({ user }) {
         },
         e('span', { style: { width: '7px', height: '7px', borderRadius: '999px', background: online ? 'var(--success)' : 'var(--warn)', display: 'inline-block' } }),
         online ? 'Live – synced with your team' : 'Offline – changes will sync later'
+      ),
+      e(
+        'div',
+        { ref: remindersRef, style: { position: 'relative' } },
+        e(
+          'button',
+          {
+            onClick: () => setRemindersOpen((o) => !o),
+            title: 'Things assigned to you that are due today or overdue',
+            style: {
+              position: 'relative', fontSize: '0.9375rem', width: '2rem', height: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: '999px', background: remindersOpen ? 'var(--surface-tint)' : 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer',
+            },
+          },
+          '🔔',
+          dueReminders.length > 0 && e('span', {
+            style: {
+              position: 'absolute', top: '-4px', right: '-4px', minWidth: '1.125rem', height: '1.125rem', padding: '0 0.25rem', borderRadius: '999px',
+              background: 'var(--danger)', color: '#fff', fontSize: '0.625rem', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+            },
+          }, dueReminders.length)
+        ),
+        remindersOpen && e(
+          'div',
+          { style: { position: 'absolute', top: 'calc(100% + 0.25rem)', right: 0, width: '18rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.5rem', boxShadow: '0 8px 24px rgba(0,0,0,0.18)', maxHeight: '20rem', overflowY: 'auto', zIndex: 40 } },
+          e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', padding: '0.625rem 0.75rem 0.375rem' } }, 'Due today or overdue'),
+          dueReminders.length === 0
+            ? e('p', { style: { fontSize: '0.8125rem', color: 'var(--text-muted)', padding: '0 0.75rem 0.75rem', margin: 0 } }, "Nothing due — you're all caught up.")
+            : dueReminders.map((it) => e(
+                'div',
+                {
+                  key: it.id,
+                  role: 'button',
+                  tabIndex: 0,
+                  onClick: () => { it.onOpen(); setRemindersOpen(false); },
+                  onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); setRemindersOpen(false); } },
+                  style: { cursor: 'pointer', padding: '0.5rem 0.75rem', borderTop: '1px solid var(--border)' },
+                },
+                e(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' } },
+                  e('div', { style: { fontSize: '0.8125rem', fontWeight: 600, color: PURPLE_DARK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.title),
+                  e('span', { style: { fontSize: '0.6875rem', color: 'var(--danger)', flexShrink: 0, whiteSpace: 'nowrap' } }, it.due === toDateKey(new Date()) ? 'Today' : formatDate(it.due))
+                ),
+                e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', marginTop: '0.125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.context)
+              ))
+        )
       ),
       busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
       e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion'),
