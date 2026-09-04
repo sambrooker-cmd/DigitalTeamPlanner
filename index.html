@@ -427,15 +427,15 @@ function TemplateRow({ template, onRename, onDelete }) {
   );
 }
 
-function TemplatesModal({ templates, onClose, onRename, onDelete }) {
+function TemplatesModal({ templates, onClose, onRename, onDelete, canEdit }) {
   return e(
     Modal,
     { title: 'Promotion templates', onClose },
     (!templates || templates.length === 0)
       ? e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, "No templates yet — save one from a promotion's Edit screen.")
       : e(
-          'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
+          'fieldset',
+          { disabled: !canEdit, style: { ...fieldsetResetStyle, display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
           templates.map((t) => e(TemplateRow, { key: t.id, template: t, onRename, onDelete }))
         )
   );
@@ -456,6 +456,13 @@ function Field({ label, required, children }) {
 }
 
 const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', fontSize: '0.875rem', outline: 'none', fontFamily: 'inherit', background: 'var(--surface)', color: 'var(--text-primary)' };
+
+// Wraps a group of form fields/buttons for Viewers: a disabled <fieldset> makes every input,
+// select, textarea, and button inside it inert in one shot (a native HTML behavior — no need to
+// thread `disabled` through each field individually). `display: contents` keeps it invisible to
+// layout, so wrapping never shifts anything. Purely a UX nicety — the real enforcement is
+// server-side in the Firestore/Storage rules (isEditor()), same as every other permission here.
+const fieldsetResetStyle = { border: 'none', margin: 0, padding: 0, display: 'contents' };
 
 // A single headline number — plain proportional figures (not tabular-nums; this isn't a column
 // of numbers that needs to align), color left to the default heading tone unless the value
@@ -927,6 +934,43 @@ function useUsersDirectory() {
     return unsub;
   }, []);
   return { users, error };
+}
+
+// The signed-in viewer's own permission tier, read off their allowlist doc (the same doc that
+// already gates access at all — see the Firestore rules). A doc with no `role` field predates
+// this feature and defaults to 'editor', so nobody's access silently changes when this ships.
+// Purely a UX signal: what actually stops a viewer from writing is the Firestore/Storage rules,
+// not this value, so a read error also just falls back to 'editor' rather than blocking the UI.
+function useMyRole(email) {
+  const [role, setRole] = useState(null); // null = loading
+  useEffect(() => {
+    if (!email) return;
+    const unsub = onSnapshot(
+      doc(fdb, 'allowlist', email),
+      (snap) => { const data = snap.data(); setRole((data && data.role) || 'editor'); },
+      () => setRole('editor')
+    );
+    return unsub;
+  }, [email]);
+  return role;
+}
+
+// Every allowlist entry, for the Admin screen — who has access and what role they hold.
+// Firestore rules restrict listing this collection to admins, so this only ever resolves
+// (or is even mounted) from there; anyone else querying it gets a permission error.
+function useAllowlist(active) {
+  const [entries, setEntries] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!active) return;
+    const unsub = onSnapshot(
+      collection(fdb, 'allowlist'),
+      (snap) => { setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setEntries((prev) => prev || []); setError(err.message || 'Could not load the allowlist.'); }
+    );
+    return unsub;
+  }, [active]);
+  return { entries, error };
 }
 
 // Generic top-level collection listener, used by both test trackers (paidTests, croTests).
@@ -1430,6 +1474,118 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
   );
 }
 
+const ROLE_LABELS = { admin: 'Admin', editor: 'Editor', viewer: 'Viewer' };
+
+// Admin-only screen (see the Admin nav tab, only rendered for isAdmin) for managing who's on
+// the allowlist and what they can do — the in-app alternative to hand-editing allowlist docs in
+// the Firebase console. Adding someone here is literally the same write the console does
+// (setDoc on allowlist/{email}), so nothing about how access is granted actually changed.
+function AdminSection({ currentUserEmail, users, pushToast, isMobile }) {
+  const { entries, error } = useAllowlist(true);
+  const [newEmail, setNewEmail] = useState('');
+  const [newRole, setNewRole] = useState('editor');
+  const [busy, setBusy] = useState(false);
+
+  function displayNameFor(email) {
+    const u = (users || []).find((u2) => u2.email === email);
+    return u ? u.displayName : null;
+  }
+
+  async function addEntry() {
+    const email = newEmail.trim().toLowerCase();
+    if (!email) return;
+    setBusy(true);
+    try {
+      await setDoc(doc(fdb, 'allowlist', email), { role: newRole, addedBy: currentUserEmail, addedAt: serverTimestamp() }, { merge: true });
+      setNewEmail('');
+      setNewRole('editor');
+    } catch (err) {
+      pushToast('Could not add this person: ' + err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeRole(email, role) {
+    if (email === currentUserEmail && role !== 'admin') {
+      const otherAdmins = (entries || []).filter((en) => en.id !== email && (en.role || 'editor') === 'admin').length;
+      if (otherAdmins === 0) { pushToast("You're the only admin — promote someone else first."); return; }
+    }
+    try {
+      await updateDoc(doc(fdb, 'allowlist', email), { role });
+    } catch (err) {
+      pushToast('Could not change that role: ' + err.message);
+    }
+  }
+
+  async function removeEntry(email) {
+    if (email === currentUserEmail) { pushToast("You can't revoke your own access."); return; }
+    if (!window.confirm(`Revoke access for ${email}? They'll be signed out of the board.`)) return;
+    try {
+      await deleteDoc(doc(fdb, 'allowlist', email));
+    } catch (err) {
+      pushToast('Could not revoke access: ' + err.message);
+    }
+  }
+
+  return e(
+    'div',
+    { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem', maxWidth: '40rem' } },
+    e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, "Who can sign in, and what they can do once they're in — Admins manage this list, Editors can create/edit/delete everything, Viewers can look but not touch."),
+    error && e('p', { style: { fontSize: '0.875rem', color: 'var(--danger)' } }, `Couldn't load the allowlist: ${error}`),
+    e(
+      'div',
+      { style: { display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' } },
+      e('input', {
+        style: { ...inputStyle, flex: '1 1 12rem' },
+        value: newEmail,
+        placeholder: 'name@company.com',
+        onChange: (ev) => setNewEmail(ev.target.value),
+        onKeyDown: (ev) => { if (ev.key === 'Enter') addEntry(); },
+      }),
+      e('select', { style: { ...inputStyle, flex: '0 0 8rem' }, value: newRole, onChange: (ev) => setNewRole(ev.target.value) },
+        Object.keys(ROLE_LABELS).map((r) => e('option', { key: r, value: r }, ROLE_LABELS[r]))),
+      e('button', {
+        onClick: addEntry,
+        disabled: busy || !newEmail.trim(),
+        style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy || !newEmail.trim() ? 0.6 : 1 },
+      }, 'Add')
+    ),
+    !entries && !error && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
+    entries && entries.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Nobody on the allowlist yet.'),
+    entries && entries.length > 0 && e(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
+      entries.slice().sort((a, b) => a.id.localeCompare(b.id)).map((en) => {
+        const role = en.role || 'editor';
+        const name = displayNameFor(en.id);
+        const isSelf = en.id === currentUserEmail;
+        return e(
+          'div',
+          { key: en.id, style: { display: 'flex', alignItems: 'center', gap: '0.75rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.625rem 0.75rem' } },
+          e(
+            'div',
+            { style: { flex: 1, minWidth: 0 } },
+            e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, name ? `${name}${isSelf ? ' (you)' : ''}` : `${en.id}${isSelf ? ' (you)' : ''}`),
+            name && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, en.id)
+          ),
+          e('select', {
+            value: role,
+            onChange: (ev) => changeRole(en.id, ev.target.value),
+            style: { ...inputStyle, width: 'auto', flexShrink: 0 },
+          }, Object.keys(ROLE_LABELS).map((r) => e('option', { key: r, value: r }, ROLE_LABELS[r]))),
+          e('button', {
+            onClick: () => removeEntry(en.id),
+            disabled: isSelf,
+            title: isSelf ? "You can't revoke your own access" : 'Revoke access',
+            style: { fontSize: '0.8125rem', color: isSelf ? 'var(--text-muted)' : 'var(--danger)', background: 'none', border: 'none', cursor: isSelf ? 'default' : 'pointer', padding: 0, flexShrink: 0, opacity: isSelf ? 0.5 : 1 },
+          }, 'Revoke')
+        );
+      })
+    )
+  );
+}
+
 function PromotionPlanner({ user }) {
   const online = useOnlineStatus();
   const [theme, setTheme] = useTheme();
@@ -1440,6 +1596,9 @@ function PromotionPlanner({ user }) {
   const { toasts, pushToast, dismissToast } = useToasts();
   const { pendingKeys: pendingDeleteKeys, deleteWithUndo } = useUndoableDelete(pushToast);
   const { users, error: usersError } = useUsersDirectory();
+  const myRole = useMyRole(user.email); // null while loading, then 'admin' | 'editor' | 'viewer'
+  const canEdit = myRole !== 'viewer'; // optimistic while loading (null), matches the 'editor' default
+  const isAdmin = myRole === 'admin';
 
   // Registers/refreshes this viewer in the team directory (used to populate assignee
   // dropdowns) — organic, no admin step needed. Runs once per sign-in.
@@ -2624,7 +2783,7 @@ function PromotionPlanner({ user }) {
         )
       ),
       busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
-      e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion'),
+      canEdit && e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion'),
       e('button', {
         onClick: () => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'),
         title: 'Click to change theme (follows your system by default)',
@@ -2634,6 +2793,10 @@ function PromotionPlanner({ user }) {
         'span',
         { style: { fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: isMobile ? 0 : '0.5rem', borderLeft: isMobile ? 'none' : '1px solid var(--border)' } },
         e('span', { style: { maxWidth: '11rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, actorName),
+        !canEdit && e('span', {
+          title: 'You can view everything but not create, edit, or delete anything',
+          style: { fontSize: '0.6875rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 },
+        }, 'Read-only'),
         e('button', { onClick: () => signOut(auth).catch(() => {}), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 } }, 'Sign out')
       )
     )
@@ -2672,7 +2835,8 @@ function PromotionPlanner({ user }) {
     e('button', { onClick: () => setSection('overview'), style: sectionTabStyle(section === 'overview') }, 'Overview'),
     e('button', { onClick: () => setSection('stats'), style: sectionTabStyle(section === 'stats') }, 'Stats'),
     e('button', { onClick: () => setSection('boards'), style: sectionTabStyle(section === 'boards') }, 'Boards'),
-    e('button', { onClick: () => setSection('activity'), style: sectionTabStyle(section === 'activity') }, 'Activity')
+    e('button', { onClick: () => setSection('activity'), style: sectionTabStyle(section === 'activity') }, 'Activity'),
+    isAdmin && e('button', { onClick: () => setSection('admin'), style: sectionTabStyle(section === 'admin') }, 'Admin')
   );
 
   const BOARD_TABS = [
@@ -2802,7 +2966,7 @@ function PromotionPlanner({ user }) {
             'div',
             {
               key: task.id,
-              draggable: true,
+              draggable: canEdit,
               onDragStart: () => setDraggedTaskId(task.id),
               onDragEnd: () => setDraggedTaskId(null),
               onClick: () => openEditTask(task),
@@ -2829,7 +2993,7 @@ function PromotionPlanner({ user }) {
             style: { borderRadius: '0.5rem', padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
           },
           ...cards,
-          e('button', { onClick: () => openNewTask(team.id, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reports' ? '+ Add result' : '+ Add task')
+          canEdit && e('button', { onClick: () => openNewTask(team.id, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reports' ? '+ Add result' : '+ Add task')
         );
       }
 
@@ -2892,9 +3056,9 @@ function PromotionPlanner({ user }) {
           e(
             'div',
             { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' } },
-            e('button', { onClick: () => openNewTest(TEST_TRACKERS.paid, undefined, { relatedPromoId: activePromo.id }), style: linkAddButtonStyle }, '+ Paid Media Test'),
-            e('button', { onClick: () => openNewTest(TEST_TRACKERS.cro, undefined, { relatedPromoId: activePromo.id }), style: linkAddButtonStyle }, '+ CRO/UX Test'),
-            e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], '', activePromo.id), style: linkAddButtonStyle }, '+ Email')
+            canEdit && e('button', { onClick: () => openNewTest(TEST_TRACKERS.paid, undefined, { relatedPromoId: activePromo.id }), style: linkAddButtonStyle }, '+ Paid Media Test'),
+            canEdit && e('button', { onClick: () => openNewTest(TEST_TRACKERS.cro, undefined, { relatedPromoId: activePromo.id }), style: linkAddButtonStyle }, '+ CRO/UX Test'),
+            canEdit && e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], '', activePromo.id), style: linkAddButtonStyle }, '+ Email')
           )
         ),
         linkedItems.length === 0
@@ -2938,7 +3102,7 @@ function PromotionPlanner({ user }) {
               e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
               activePromo.archived && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived'),
               e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit'),
-              e('button', { onClick: archiveActivePromoClick, style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, activePromo.archived ? 'Unarchive' : 'Archive')
+              canEdit && e('button', { onClick: archiveActivePromoClick, style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, activePromo.archived ? 'Unarchive' : 'Archive')
             ),
             activePromo.description && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem', maxWidth: '36rem' } }, activePromo.description)
           ),
@@ -3335,7 +3499,7 @@ function PromotionPlanner({ user }) {
         'div',
         {
           key: email.id,
-          draggable: true,
+          draggable: canEdit,
           onDragStart: () => setDraggedEmailId(email.id),
           onDragEnd: () => setDraggedEmailId(null),
           onClick: () => openEditEmail(email),
@@ -3364,7 +3528,7 @@ function PromotionPlanner({ user }) {
           style: { borderRadius: '0.5rem', padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
         },
         ...items.map(renderEmailCard),
-        e('button', { onClick: () => openNewEmail(status, ''), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reported' ? '+ Add result' : '+ Add email')
+        canEdit && e('button', { onClick: () => openNewEmail(status, ''), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reported' ? '+ Add result' : '+ Add email')
       );
     }
 
@@ -3428,7 +3592,7 @@ function PromotionPlanner({ user }) {
               'div',
               {
                 key: key,
-                onClick: () => openNewEmail(EMAIL_STATUSES[0], key),
+                onClick: canEdit ? () => openNewEmail(EMAIL_STATUSES[0], key) : undefined,
                 onDragOver: (ev) => ev.preventDefault(),
                 onDrop: (ev) => { ev.stopPropagation(); handleCalendarEmailDrop(key); },
                 style: {
@@ -3443,7 +3607,7 @@ function PromotionPlanner({ user }) {
                 'div',
                 {
                   key: em.id,
-                  draggable: true,
+                  draggable: canEdit,
                   onDragStart: (ev) => { ev.stopPropagation(); setDraggedEmailId(em.id); },
                   onDragEnd: () => setDraggedEmailId(null),
                   onClick: (ev) => { ev.stopPropagation(); openEditEmail(em); },
@@ -3472,7 +3636,7 @@ function PromotionPlanner({ user }) {
           { style: { display: 'flex', gap: '0.5rem' } },
           e('button', { onClick: exportEmailsCSV, style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export CSV'),
           e('button', { onClick: exportEmailsICS, title: 'Import into Outlook, Google Calendar, or Apple Calendar', style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export .ics'),
-          e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
+          canEdit && e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
         )
       ),
       !emails && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
@@ -3493,7 +3657,7 @@ function PromotionPlanner({ user }) {
         'div',
         {
           key: item.id,
-          draggable: true,
+          draggable: canEdit,
           onDragStart: () => setDraggedTestId(item.id),
           onDragEnd: () => setDraggedTestId(null),
           onClick: () => openEditTest(config, item),
@@ -3528,7 +3692,7 @@ function PromotionPlanner({ user }) {
           style: { borderRadius: '0.5rem', padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
         },
         ...colItems.map(renderTestCard),
-        e('button', { onClick: () => openNewTest(config, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Concluded' ? '+ Add result' : '+ Add test')
+        canEdit && e('button', { onClick: () => openNewTest(config, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Concluded' ? '+ Add result' : '+ Add test')
       );
     }
 
@@ -3578,7 +3742,7 @@ function PromotionPlanner({ user }) {
           'div',
           { style: { display: 'flex', gap: '0.5rem' } },
           e('button', { onClick: () => exportTestsCSV(config, items), style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export CSV'),
-          e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
+          canEdit && e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
         )
       ),
       !items && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)', padding: subView === 'timeline' ? (isMobile ? '0 1rem' : '0 2rem') : undefined } }, 'Loading…'),
@@ -3621,7 +3785,7 @@ function PromotionPlanner({ user }) {
             e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.title),
             e('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.125rem' } }, `${it.typeLabel} · deleted by ${it.deletedBy || 'someone'} · ${formatDateTime(it.deletedAt)}`)
           ),
-          e(
+          canEdit && e(
             'div',
             { style: { display: 'flex', gap: '0.75rem', flexShrink: 0 } },
             e('button', { onClick: it.restore, style: { fontSize: '0.8125rem', color: PURPLE_TEXT, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Restore'),
@@ -3640,37 +3804,45 @@ function PromotionPlanner({ user }) {
     taskModalEl = e(
       Modal,
       { title: taskForm.id ? 'Edit task' : 'New task', onClose: () => { setTaskModal(false); setTaskForm(null); } },
-      e(Field, { label: 'Team' }, e('select', { style: inputStyle, value: taskForm.team, onChange: (ev) => setTaskForm({ ...taskForm, team: ev.target.value }) }, TEAMS.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
-      e(Field, { label: 'Activity type' }, e('select', { style: inputStyle, value: taskForm.type, onChange: (ev) => setTaskForm({ ...taskForm, type: ev.target.value }) }, TYPES.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
-      e(Field, { label: taskForm.status === 'Reports' ? 'Result headline' : 'Task', required: true }, e('input', { style: inputStyle, value: taskForm.title, onChange: (ev) => setTaskForm({ ...taskForm, title: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'e.g. Conversion rate 4.1 percent' : 'e.g. Brief paid social creative' })),
       e(
-        'div',
-        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Assignee' }, renderAssigneeSelect(taskForm.assignee, (v) => setTaskForm({ ...taskForm, assignee: v }), users)),
-        e(Field, { label: 'Due date' }, e('input', { type: 'date', style: inputStyle, value: taskForm.due, onChange: (ev) => setTaskForm({ ...taskForm, due: ev.target.value }) }))
-      ),
-      e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: taskForm.status, onChange: (ev) => setTaskForm({ ...taskForm, status: ev.target.value }) }, STATUSES.map((s) => e('option', { key: s, value: s }, s)))),
-      e(Field, { label: taskForm.status === 'Reports' ? 'Detail on performance' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: taskForm.notes, onChange: (ev) => setTaskForm({ ...taskForm, notes: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'What happened, key metrics, what to repeat or change next time' : '' })),
-      taskForm.id && e(
-        'p',
-        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
-        `Created by ${taskForm.createdBy || 'unknown'}${taskForm.createdAt ? ' · ' + formatDateTime(taskForm.createdAt) : ''}`,
-        taskForm.updatedBy && e('span', null, e('br'), `Last edited by ${taskForm.updatedBy}${taskForm.updatedAt ? ' · ' + formatDateTime(taskForm.updatedAt) : ''}`)
-      ),
-      e(
-        'div',
-        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        taskForm.id ? e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        e(Field, { label: 'Team' }, e('select', { style: inputStyle, value: taskForm.team, onChange: (ev) => setTaskForm({ ...taskForm, team: ev.target.value }) }, TEAMS.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
+        e(Field, { label: 'Activity type' }, e('select', { style: inputStyle, value: taskForm.type, onChange: (ev) => setTaskForm({ ...taskForm, type: ev.target.value }) }, TYPES.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
+        e(Field, { label: taskForm.status === 'Reports' ? 'Result headline' : 'Task', required: true }, e('input', { style: inputStyle, value: taskForm.title, onChange: (ev) => setTaskForm({ ...taskForm, title: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'e.g. Conversion rate 4.1 percent' : 'e.g. Brief paid social creative' })),
+        e(
           'div',
-          { style: { display: 'flex', gap: '1rem' } },
-          e('button', { onClick: duplicateTaskClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
-          e('button', { onClick: deleteTaskClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
-        ) : e('span'),
-        e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+          e(Field, { label: 'Assignee' }, renderAssigneeSelect(taskForm.assignee, (v) => setTaskForm({ ...taskForm, assignee: v }), users)),
+          e(Field, { label: 'Due date' }, e('input', { type: 'date', style: inputStyle, value: taskForm.due, onChange: (ev) => setTaskForm({ ...taskForm, due: ev.target.value }) }))
+        ),
+        e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: taskForm.status, onChange: (ev) => setTaskForm({ ...taskForm, status: ev.target.value }) }, STATUSES.map((s) => e('option', { key: s, value: s }, s)))),
+        e(Field, { label: taskForm.status === 'Reports' ? 'Detail on performance' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: taskForm.notes, onChange: (ev) => setTaskForm({ ...taskForm, notes: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'What happened, key metrics, what to repeat or change next time' : '' })),
+        taskForm.id && e(
+          'p',
+          { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+          `Created by ${taskForm.createdBy || 'unknown'}${taskForm.createdAt ? ' · ' + formatDateTime(taskForm.createdAt) : ''}`,
+          taskForm.updatedBy && e('span', null, e('br'), `Last edited by ${taskForm.updatedBy}${taskForm.updatedAt ? ' · ' + formatDateTime(taskForm.updatedAt) : ''}`)
+        ),
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+          taskForm.id ? e(
+            'div',
+            { style: { display: 'flex', gap: '1rem' } },
+            e('button', { onClick: duplicateTaskClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+            e('button', { onClick: deleteTaskClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
+          ) : e('span'),
+          e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+        )
       ),
       taskForm.id && e(HistorySection, { entries: taskHistory.entries, error: taskHistory.error }),
-      taskForm.id && activePromo && e(AttachmentsSection, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        taskForm.id && activePromo && e(AttachmentsSection, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
+        taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      )
     );
   }
 
@@ -3679,41 +3851,49 @@ function PromotionPlanner({ user }) {
     promoModalEl = e(
       Modal,
       { title: promoForm.id ? 'Edit promotion' : 'New promotion', onClose: () => { setPromoModal(false); setPromoForm(null); setSelectedTemplateId(''); } },
-      !promoForm.id && promoTemplates && promoTemplates.length > 0 && e(Field, { label: 'Start from a template (optional)' }, e(
-        'select',
-        { style: inputStyle, value: selectedTemplateId, onChange: (ev) => applyTemplate(ev.target.value) },
-        e('option', { value: '' }, 'Start blank'),
-        promoTemplates.map((t) => e('option', { key: t.id, value: t.id }, `${t.name} (${(t.tasks || []).length} task${(t.tasks || []).length === 1 ? '' : 's'})`))
-      )),
-      e(Field, { label: 'Promotion name', required: true }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
       e(
-        'div',
-        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Launch date', required: true }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
-        e(Field, { label: 'End date (optional)' }, e('input', { type: 'date', style: inputStyle, min: promoForm.launchDate || undefined, value: promoForm.endDate || '', onChange: (ev) => setPromoForm({ ...promoForm, endDate: ev.target.value }) }))
-      ),
-      e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
-      promoForm.id && e(
-        'p',
-        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
-        `Created by ${promoForm.createdBy || 'unknown'}${promoForm.createdAt ? ' · ' + formatDateTime(promoForm.createdAt) : ''}`
-      ),
-      e(
-        'div',
-        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        promoForm.id ? e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        !promoForm.id && promoTemplates && promoTemplates.length > 0 && e(Field, { label: 'Start from a template (optional)' }, e(
+          'select',
+          { style: inputStyle, value: selectedTemplateId, onChange: (ev) => applyTemplate(ev.target.value) },
+          e('option', { value: '' }, 'Start blank'),
+          promoTemplates.map((t) => e('option', { key: t.id, value: t.id }, `${t.name} (${(t.tasks || []).length} task${(t.tasks || []).length === 1 ? '' : 's'})`))
+        )),
+        e(Field, { label: 'Promotion name', required: true }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
+        e(
           'div',
-          { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
-          e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
-          e('button', { onClick: saveAsTemplateClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Save as template'),
-          e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
-          e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
-        ) : e('span'),
-        e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+          e(Field, { label: 'Launch date', required: true }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
+          e(Field, { label: 'End date (optional)' }, e('input', { type: 'date', style: inputStyle, min: promoForm.launchDate || undefined, value: promoForm.endDate || '', onChange: (ev) => setPromoForm({ ...promoForm, endDate: ev.target.value }) }))
+        ),
+        e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
+        promoForm.id && e(
+          'p',
+          { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+          `Created by ${promoForm.createdBy || 'unknown'}${promoForm.createdAt ? ' · ' + formatDateTime(promoForm.createdAt) : ''}`
+        ),
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+          promoForm.id ? e(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
+            e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+            e('button', { onClick: saveAsTemplateClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Save as template'),
+            e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
+            e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
+          ) : e('span'),
+          e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
+        )
       ),
       promoForm.id && e(HistorySection, { entries: promoHistory.entries, error: promoHistory.error }),
-      promoForm.id && e(AttachmentsSection, { pathSegments: ['promotions', promoForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        promoForm.id && e(AttachmentsSection, { pathSegments: ['promotions', promoForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
+        promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      )
     );
   }
 
@@ -3722,46 +3902,54 @@ function PromotionPlanner({ user }) {
     emailModalEl = e(
       Modal,
       { title: emailForm.id ? 'Edit email' : 'New email', onClose: () => { setEmailModal(false); setEmailForm(null); } },
-      e(Field, { label: 'Subject', required: true }, e('input', { style: inputStyle, value: emailForm.subject, onChange: (ev) => setEmailForm({ ...emailForm, subject: ev.target.value }), placeholder: 'e.g. This week: cabin upgrade offers' })),
       e(
-        'div',
-        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Send date', required: true }, e('input', { type: 'date', style: inputStyle, value: emailForm.sendDate, onChange: (ev) => setEmailForm({ ...emailForm, sendDate: ev.target.value }) })),
-        e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: emailForm.status, onChange: (ev) => setEmailForm({ ...emailForm, status: ev.target.value }) }, EMAIL_STATUSES.map((s) => e('option', { key: s, value: s }, s))))
-      ),
-      e(
-        'div',
-        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Assignee' }, renderAssigneeSelect(emailForm.assignee, (v) => setEmailForm({ ...emailForm, assignee: v }), users)),
-        e(Field, { label: 'Related promotion (optional)' }, e(
-          'select',
-          { style: inputStyle, value: emailForm.relatedPromoId || '', onChange: (ev) => setEmailForm({ ...emailForm, relatedPromoId: ev.target.value }) },
-          e('option', { value: '' }, 'None'),
-          promotions.map((p) => e('option', { key: p.id, value: p.id }, p.archived ? `${p.name} (archived)` : p.name))
-        ))
-      ),
-      e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' })),
-      e(Field, { label: emailForm.status === 'Reported' ? 'Performance notes' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: emailForm.notes, onChange: (ev) => setEmailForm({ ...emailForm, notes: ev.target.value }), placeholder: emailForm.status === 'Reported' ? 'Open rate, click rate, bookings attributed, what to repeat or change' : '' })),
-      emailForm.id && e(
-        'p',
-        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
-        `Created by ${emailForm.createdBy || 'unknown'}${emailForm.createdAt ? ' · ' + formatDateTime(emailForm.createdAt) : ''}`,
-        emailForm.updatedBy && e('span', null, e('br'), `Last edited by ${emailForm.updatedBy}${emailForm.updatedAt ? ' · ' + formatDateTime(emailForm.updatedAt) : ''}`)
-      ),
-      e(
-        'div',
-        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        emailForm.id ? e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        e(Field, { label: 'Subject', required: true }, e('input', { style: inputStyle, value: emailForm.subject, onChange: (ev) => setEmailForm({ ...emailForm, subject: ev.target.value }), placeholder: 'e.g. This week: cabin upgrade offers' })),
+        e(
           'div',
-          { style: { display: 'flex', gap: '1rem' } },
-          e('button', { onClick: duplicateEmailClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
-          e('button', { onClick: deleteEmailClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
-        ) : e('span'),
-        e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+          e(Field, { label: 'Send date', required: true }, e('input', { type: 'date', style: inputStyle, value: emailForm.sendDate, onChange: (ev) => setEmailForm({ ...emailForm, sendDate: ev.target.value }) })),
+          e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: emailForm.status, onChange: (ev) => setEmailForm({ ...emailForm, status: ev.target.value }) }, EMAIL_STATUSES.map((s) => e('option', { key: s, value: s }, s))))
+        ),
+        e(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+          e(Field, { label: 'Assignee' }, renderAssigneeSelect(emailForm.assignee, (v) => setEmailForm({ ...emailForm, assignee: v }), users)),
+          e(Field, { label: 'Related promotion (optional)' }, e(
+            'select',
+            { style: inputStyle, value: emailForm.relatedPromoId || '', onChange: (ev) => setEmailForm({ ...emailForm, relatedPromoId: ev.target.value }) },
+            e('option', { value: '' }, 'None'),
+            promotions.map((p) => e('option', { key: p.id, value: p.id }, p.archived ? `${p.name} (archived)` : p.name))
+          ))
+        ),
+        e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' })),
+        e(Field, { label: emailForm.status === 'Reported' ? 'Performance notes' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: emailForm.notes, onChange: (ev) => setEmailForm({ ...emailForm, notes: ev.target.value }), placeholder: emailForm.status === 'Reported' ? 'Open rate, click rate, bookings attributed, what to repeat or change' : '' })),
+        emailForm.id && e(
+          'p',
+          { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+          `Created by ${emailForm.createdBy || 'unknown'}${emailForm.createdAt ? ' · ' + formatDateTime(emailForm.createdAt) : ''}`,
+          emailForm.updatedBy && e('span', null, e('br'), `Last edited by ${emailForm.updatedBy}${emailForm.updatedAt ? ' · ' + formatDateTime(emailForm.updatedAt) : ''}`)
+        ),
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+          emailForm.id ? e(
+            'div',
+            { style: { display: 'flex', gap: '1rem' } },
+            e('button', { onClick: duplicateEmailClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+            e('button', { onClick: deleteEmailClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
+          ) : e('span'),
+          e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+        )
       ),
       emailForm.id && e(HistorySection, { entries: emailHistory.entries, error: emailHistory.error }),
-      emailForm.id && e(AttachmentsSection, { pathSegments: ['emails', emailForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        emailForm.id && e(AttachmentsSection, { pathSegments: ['emails', emailForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
+        emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      )
     );
   }
 
@@ -3771,28 +3959,36 @@ function PromotionPlanner({ user }) {
     testModalEl = e(
       Modal,
       { title: `${testForm.id ? 'Edit' : 'New'} ${config.label.replace(/s$/, '')}`, onClose: () => { setTestModal(false); setTestForm(null); } },
-      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label, required: f.required }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users, promotions))),
-      e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
-      testForm.id && e(
-        'p',
-        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
-        `Created by ${testForm.createdBy || 'unknown'}${testForm.createdAt ? ' · ' + formatDateTime(testForm.createdAt) : ''}`,
-        testForm.updatedBy && e('span', null, e('br'), `Last edited by ${testForm.updatedBy}${testForm.updatedAt ? ' · ' + formatDateTime(testForm.updatedAt) : ''}`)
-      ),
       e(
-        'div',
-        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        testForm.id ? e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        ...config.fields.map((f) => e(Field, { key: f.key, label: f.label, required: f.required }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users, promotions))),
+        e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
+        testForm.id && e(
+          'p',
+          { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+          `Created by ${testForm.createdBy || 'unknown'}${testForm.createdAt ? ' · ' + formatDateTime(testForm.createdAt) : ''}`,
+          testForm.updatedBy && e('span', null, e('br'), `Last edited by ${testForm.updatedBy}${testForm.updatedAt ? ' · ' + formatDateTime(testForm.updatedAt) : ''}`)
+        ),
+        e(
           'div',
-          { style: { display: 'flex', gap: '1rem' } },
-          e('button', { onClick: duplicateTestClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
-          e('button', { onClick: deleteTestClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
-        ) : e('span'),
-        e('button', { onClick: saveTest, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+          testForm.id ? e(
+            'div',
+            { style: { display: 'flex', gap: '1rem' } },
+            e('button', { onClick: duplicateTestClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+            e('button', { onClick: deleteTestClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
+          ) : e('span'),
+          e('button', { onClick: saveTest, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+        )
       ),
       testForm.id && e(HistorySection, { entries: testHistory.entries, error: testHistory.error }),
-      testForm.id && e(AttachmentsSection, { pathSegments: [testForm.__collection, testForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      e(
+        'fieldset',
+        { disabled: !canEdit, style: fieldsetResetStyle },
+        testForm.id && e(AttachmentsSection, { pathSegments: [testForm.__collection, testForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
+        testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
+      )
     );
   }
 
@@ -3829,11 +4025,12 @@ function PromotionPlanner({ user }) {
     emailsSection,
     testTrackerSection,
     activitySection,
+    section === 'admin' && e(AdminSection, { currentUserEmail: user.email, users, pushToast, isMobile }),
     taskModalEl,
     promoModalEl,
     emailModalEl,
     testModalEl,
-    templatesModalOpen && e(TemplatesModal, { templates: promoTemplates || [], onClose: () => setTemplatesModalOpen(false), onRename: renameTemplateClick, onDelete: deleteTemplateClick }),
+    templatesModalOpen && e(TemplatesModal, { templates: promoTemplates || [], onClose: () => setTemplatesModalOpen(false), onRename: renameTemplateClick, onDelete: deleteTemplateClick, canEdit }),
     e(ToastStack, { toasts, onDismiss: dismissToast })
   );
 }

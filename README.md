@@ -2,9 +2,16 @@
 
 A shared planning tool for the Acquisition, Retention, and Website teams.
 The top-level nav is five tabs — **My Work**, **Overview**, **Stats**,
-**Boards**, **Activity** — with the four team channels living inside
-**Boards** behind their own switcher, rather than each getting its own
-top-level tab:
+**Boards**, **Activity** — plus a sixth, **Admin**, visible only to
+Admins — with the four team channels living inside **Boards** behind
+their own switcher, rather than each getting its own top-level tab:
+
+Everyone who signs in has one of three roles: **Admin** (also manages who
+has access and what role they hold), **Editor** (the default — can create,
+edit, delete, comment, and attach files everywhere), or **Viewer**
+(read-only: sees everything, including exports, but every create/edit/
+delete control is hidden or disabled). See "Firebase setup" below for how
+roles are set.
 
 - **My Work** — everything assigned to the signed-in viewer (promotion
   tasks, emails, paid media tests, CRO/UX tests), soonest due date
@@ -40,6 +47,9 @@ top-level tab:
 - **Activity** — a live change log across everything above, plus a
   **Recently Deleted** sub-view for restoring (or permanently deleting)
   anything soft-deleted — see below.
+- **Admin** (Admins only) — the team's allowlist: add someone by email
+  with a starting role, change anyone's role, or revoke their access —
+  all without touching the Firebase console.
 
 The header also has a **search box** that reaches everything at once —
 promotions, individual tasks, emails, and both test trackers — regardless
@@ -145,13 +155,18 @@ allows sign-in from domains listed here — `localhost` and the project's own
 `firebaseapp.com` are added by default, but your GitHub Pages domain isn't,
 and sign-in will fail with an "unauthorized domain" error until you add it).
 
-**2. Approve who can access the board.** Under **Firestore Database →
-Data**, create a collection named `allowlist`. For each teammate you want to
-let in, add a document whose **document ID is their exact Google account
-email** (e.g. `sam@gmail.com`) — the document's fields don't matter, it can
-be empty or hold a note like `{ note: "added 3 Sep" }`. To revoke someone,
-delete their document. This is the only way to manage access; it isn't
-editable from the app itself, on purpose.
+**2. Approve who can access the board, and make yourself an Admin.** Under
+**Firestore Database → Data**, create a collection named `allowlist`. For
+each teammate you want to let in, add a document whose **document ID is
+their exact Google account email** (e.g. `sam@gmail.com`) with a `role`
+field set to `admin`, `editor`, or `viewer` — Admins can also manage this
+list from inside the app (see the **Admin** tab, below), Editors can
+create/edit/delete everything, Viewers can look but not touch anything.
+A document with no `role` field defaults to `editor`. **Give at least one
+person — probably yourself — `role: "admin"` here**, since that's the only
+way to become the first Admin; everyone after that can be added/promoted/
+revoked from the Admin tab instead of coming back to this console. To
+revoke someone without the app, delete their document here.
 
 **3. Set the Firestore rules.** Under **Firestore Database → Rules**, use:
 
@@ -165,94 +180,131 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email));
     }
 
+    // A missing `role` field defaults to 'editor' — same default the client uses — so nobody's
+    // access silently changes for allowlist docs created before roles existed.
+    function myRole() {
+      let doc = get(/databases/$(database)/documents/allowlist/$(request.auth.token.email));
+      return 'role' in doc.data ? doc.data.role : 'editor';
+    }
+
+    function isEditor() {
+      return isAllowed() && myRole() in ['editor', 'admin'];
+    }
+
+    function isAdmin() {
+      return isAllowed() && myRole() == 'admin';
+    }
+
     function isAuthor() {
-      return isAllowed() && request.auth.token.email == resource.data.byEmail;
+      return isEditor() && request.auth.token.email == resource.data.byEmail;
     }
 
     match /promotions/{promoId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
       match /tasks/{taskId} {
-        allow read, write: if isAllowed();
+        allow read: if isAllowed();
+        allow write: if isEditor();
         match /comments/{commentId} {
-          allow read, create: if isAllowed();
+          allow read: if isAllowed();
+          allow create: if isEditor();
           allow update: if false;
           allow delete: if isAuthor();
         }
         match /attachments/{attachmentId} {
-          allow read, create: if isAllowed();
+          allow read: if isAllowed();
+          allow create: if isEditor();
           allow update: if false;
           allow delete: if isAuthor();
         }
       }
       match /comments/{commentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
       match /attachments/{attachmentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
     }
 
     match /emails/{emailId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
       match /comments/{commentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
       match /attachments/{attachmentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
     }
 
     match /paidTests/{testId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
       match /comments/{commentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
       match /attachments/{attachmentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
     }
 
     match /croTests/{testId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
       match /comments/{commentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
       match /attachments/{attachmentId} {
-        allow read, create: if isAllowed();
+        allow read: if isAllowed();
+        allow create: if isEditor();
         allow update: if false;
         allow delete: if isAuthor();
       }
     }
 
     match /promoTemplates/{templateId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
     }
 
     match /activity/{entryId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
     }
 
     match /meta/{docId} {
-      allow read, write: if isAllowed();
+      allow read: if isAllowed();
+      allow write: if isEditor();
     }
 
+    // Everyone on the allowlist can read their own entry (that's how the app finds out its own
+    // role); only Admins can list the whole collection or write to it — which is what makes the
+    // in-app Admin tab work without ever touching the Firebase console again after bootstrapping.
     match /allowlist/{email} {
-      allow read: if request.auth != null && request.auth.token.email == email;
-      allow write: if false;
+      allow get: if (request.auth != null && request.auth.token.email == email) || isAdmin();
+      allow list: if isAdmin();
+      allow write: if isAdmin();
     }
 
     match /users/{email} {
@@ -265,7 +317,11 @@ service cloud.firestore {
 
 Anyone not signed in, or signed in but not on the allowlist, is bounced to a
 sign-in or "ask an admin" screen before ever reaching the board — enforced
-by these rules server-side, not just hidden in the UI.
+by these rules server-side, not just hidden in the UI. Viewers get past that
+screen (they're allowed in) but every write above requires `isEditor()`, so
+a Viewer who somehow bypassed the UI (devtools, a stale tab) still can't
+create, edit, or delete anything — the UI hiding those controls is a
+convenience, not the actual security boundary.
 
 **4. Enable Cloud Storage and set its rules.** Attachments need Firebase
 Storage, which — unlike Firestore — isn't on by default. In the
@@ -284,27 +340,36 @@ service firebase.storage {
         firestore.exists(/databases/(default)/documents/allowlist/$(request.auth.token.email));
     }
 
+    function myRole() {
+      let doc = firestore.get(/databases/(default)/documents/allowlist/$(request.auth.token.email));
+      return 'role' in doc.data ? doc.data.role : 'editor';
+    }
+
+    function isEditor() {
+      return isAllowed() && myRole() in ['editor', 'admin'];
+    }
+
     match /attachments/{allPaths=**} {
       allow read: if isAllowed();
-      allow write: if isAllowed() && request.resource.size < 10 * 1024 * 1024;
-      allow delete: if isAllowed();
+      allow write: if isEditor() && request.resource.size < 10 * 1024 * 1024;
+      allow delete: if isEditor();
     }
   }
 }
 ```
 
-This mirrors the same allowlist gate as the Firestore rules above (Storage
-rules can reach into Firestore with `firestore.exists()`/`firestore.get()`
-to reuse it, so access stays governed from the one `allowlist` collection)
-and caps uploads at 10MB server-side, matching the app's own client-side
-check. Storage doesn't support per-document ownership checks the way
-Firestore's `resource.data.byEmail` does, so file deletion is gated the same
-way as everything else here — anyone on the allowlist can technically call
-delete on a Storage object directly — while the app's own UI only ever
-offers the Delete button to the uploader; the matching Firestore rule above
-(`allow delete: if isAuthor()`) still stops anyone but the uploader from
-removing the attachment's metadata doc, which is what the app actually
-reads.
+This mirrors the same allowlist gate (and now the same role check) as the
+Firestore rules above — Storage rules can reach into Firestore with
+`firestore.exists()`/`firestore.get()` to reuse them, so access stays
+governed from the one `allowlist` collection — and caps uploads at 10MB
+server-side, matching the app's own client-side check. Storage doesn't
+support per-document ownership checks the way Firestore's
+`resource.data.byEmail` does, so file deletion here is gated on role only
+(any Editor/Admin could technically delete any attachment's Storage object
+directly), while the app's own UI only ever offers the Delete button to the
+uploader; the matching Firestore rule above (`allow delete: if isAuthor()`)
+still stops anyone but the uploader from removing the attachment's metadata
+doc, which is what the app actually reads.
 
 ### Data model
 
@@ -394,8 +459,11 @@ time. See "Recently Deleted" above for the UI this powers.
   `testId` where relevant, so each item's own edit screen can show a
   filtered History of just itself). Shown newest-first under the
   **Activity** tab (last 100 entries).
-- `allowlist/{email}` — access control, managed only from the Firebase
-  console (see above).
+- `allowlist/{email}` — access control: who can sign in (`role`: `admin` /
+  `editor` / `viewer`, defaulting to `editor` if unset, plus `addedBy`/
+  `addedAt` when added from the app). Bootstrapped from the Firebase
+  console (see above); day-to-day, Admins manage it from the in-app
+  **Admin** tab instead.
 - `users/{email}` — the team directory that powers assignee dropdowns
   and My Work. Each person writes only their own document (`email`,
   `displayName`, `lastSeen`) the moment they sign in — nothing to
