@@ -155,6 +155,48 @@ const TYPES = [
 
 const EMAIL_STATUSES = ['Briefing', 'Testing', 'Approved', 'Scheduled', 'Sent', 'Reported'];
 
+const OUTCOME_OPTIONS = ['TBD', 'Win', 'Loss', 'Inconclusive'];
+
+// Config-driven test trackers: both are "hypothesis -> variant -> result" shaped, just with
+// different fields and stages, so one generic board+modal renders either from its config
+// rather than duplicating the whole thing per tracker.
+const TEST_TRACKERS = {
+  paid: {
+    label: 'Paid Media Tests',
+    collection: 'paidTests',
+    statuses: ['Planned', 'Live', 'Analyzing', 'Concluded'],
+    fields: [
+      { key: 'name', label: 'Test name', type: 'text', required: true, placeholder: 'e.g. Broad vs 1% lookalike audience' },
+      { key: 'channel', label: 'Channel', type: 'select', options: ['Meta', 'Google Search', 'Google Display', 'TikTok', 'LinkedIn', 'Other'] },
+      { key: 'hypothesis', label: 'Hypothesis', type: 'textarea', placeholder: 'We believe that... will result in... because...' },
+      { key: 'variants', label: "What's being tested", type: 'text', placeholder: 'e.g. Control (broad) vs Variant A (1% lookalike)' },
+      { key: 'startDate', label: 'Start date', type: 'date', required: true },
+      { key: 'endDate', label: 'End date', type: 'date' },
+      { key: 'budget', label: 'Budget', type: 'text', placeholder: 'e.g. £500/day' },
+      { key: 'assignee', label: 'Assignee', type: 'text' },
+      { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_OPTIONS },
+      { key: 'result', label: 'Result / learning', type: 'textarea', placeholder: 'What happened, key metrics, what to repeat or change next time' },
+    ],
+  },
+  cro: {
+    label: 'CRO/UX Tests',
+    collection: 'croTests',
+    statuses: ['Idea', 'Building', 'Live', 'Analyzing', 'Concluded'],
+    fields: [
+      { key: 'name', label: 'Test name', type: 'text', required: true, placeholder: 'e.g. Single-page checkout' },
+      { key: 'area', label: 'Page / area', type: 'text', placeholder: 'e.g. Checkout step 2' },
+      { key: 'hypothesis', label: 'Hypothesis', type: 'textarea', placeholder: 'We believe that... will result in... because...' },
+      { key: 'variant', label: 'Variant description', type: 'text', placeholder: "What's different in the test" },
+      { key: 'metric', label: 'Primary metric', type: 'text', placeholder: 'e.g. Conversion rate' },
+      { key: 'startDate', label: 'Start date', type: 'date', required: true },
+      { key: 'endDate', label: 'End date', type: 'date' },
+      { key: 'assignee', label: 'Assignee', type: 'text' },
+      { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_OPTIONS },
+      { key: 'result', label: 'Result / learning', type: 'textarea', placeholder: 'What happened, key metrics, ship decision' },
+    ],
+  },
+};
+
 const ACTION_LABELS = {
   task_created: 'created task',
   task_updated: 'edited task',
@@ -170,6 +212,10 @@ const ACTION_LABELS = {
   email_updated: 'edited email',
   email_moved: 'moved email',
   email_deleted: 'deleted email',
+  test_created: 'created test',
+  test_updated: 'edited test',
+  test_moved: 'moved test',
+  test_deleted: 'deleted test',
 };
 
 const PURPLE = 'var(--accent)';
@@ -306,6 +352,20 @@ function Field({ label, children }) {
 }
 
 const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', fontSize: '0.875rem', outline: 'none', fontFamily: 'inherit', background: 'var(--surface)', color: 'var(--text-primary)' };
+
+// Renders one input for a config-driven test-tracker field (see TEST_TRACKERS).
+function renderTestFieldInput(field, value, onChange) {
+  if (field.type === 'select') {
+    return e('select', { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) }, field.options.map((o) => e('option', { key: o, value: o }, o)));
+  }
+  if (field.type === 'textarea') {
+    return e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: value || '', onChange: (ev) => onChange(ev.target.value), placeholder: field.placeholder || '' });
+  }
+  if (field.type === 'date') {
+    return e('input', { type: 'date', style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) });
+  }
+  return e('input', { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value), placeholder: field.placeholder || '' });
+}
 
 // --- Timeline helpers ---
 function taskDates(promo) {
@@ -521,6 +581,21 @@ function useEmailsCollection() {
   return docs;
 }
 
+// Generic top-level collection listener, used by both test trackers (paidTests, croTests).
+function useCollectionDocs(collectionName, orderField) {
+  const [docs, setDocs] = useState(null); // null = loading
+  useEffect(() => {
+    const q = query(collection(fdb, collectionName), orderBy(orderField));
+    const unsub = onSnapshot(
+      q,
+      (snap) => setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      () => setDocs((prev) => prev || [])
+    );
+    return unsub;
+  }, [collectionName, orderField]);
+  return docs;
+}
+
 function useTasksByPromo(promoIds) {
   const [tasksByPromo, setTasksByPromo] = useState({});
   const unsubsRef = useRef({});
@@ -577,6 +652,8 @@ function PromotionPlanner({ user }) {
   const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
   const tasksByPromo = useTasksByPromo(promoIds);
   const emails = useEmailsCollection();
+  const paidTests = useCollectionDocs('paidTests', 'startDate');
+  const croTests = useCollectionDocs('croTests', 'startDate');
 
   // Seed the store once, guarded by a transaction so concurrent first-openers don't double-seed.
   useEffect(() => {
@@ -642,6 +719,9 @@ function PromotionPlanner({ user }) {
   const [emailModal, setEmailModal] = useState(false);
   const [emailForm, setEmailForm] = useState(null);
   const [draggedEmailId, setDraggedEmailId] = useState(null);
+  const [testModal, setTestModal] = useState(false);
+  const [testForm, setTestForm] = useState(null);
+  const [draggedTestId, setDraggedTestId] = useState(null);
 
   const activePromo = promotions ? (promotions.find((p) => p.id === activePromoId) || promotions[0]) : null;
 
@@ -803,6 +883,93 @@ function PromotionPlanner({ user }) {
     const email = (emails || []).find((em) => em.id === draggedEmailId);
     if (email && email.status !== status) moveEmail(email.id, email.subject, status, email.status);
     setDraggedEmailId(null);
+  }
+
+  // --- Generic test-tracker mutations, shared by Paid Media and CRO/UX (config-driven). ---
+  function findTrackerConfig(collectionName) {
+    return Object.values(TEST_TRACKERS).find((c) => c.collection === collectionName);
+  }
+
+  async function addTestItem(collectionName, label, data) {
+    setBusy(true);
+    try {
+      await addDoc(collection(fdb, collectionName), {
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+      });
+      await logActivity({ action: 'test_created', taskTitle: data.name, promoName: label });
+    } finally { setBusy(false); }
+  }
+
+  async function saveExistingTestItem(collectionName, label, id, data) {
+    setBusy(true);
+    try {
+      await updateDoc(doc(fdb, collectionName, id), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'test_updated', taskTitle: data.name, promoName: label });
+    } finally { setBusy(false); }
+  }
+
+  async function removeTestItem(collectionName, label, id, name) {
+    setBusy(true);
+    try {
+      await deleteDoc(doc(fdb, collectionName, id));
+      await logActivity({ action: 'test_deleted', taskTitle: name, promoName: label });
+    } finally { setBusy(false); }
+  }
+
+  async function moveTestItem(collectionName, label, id, name, status, fromStatus) {
+    try {
+      await updateDoc(doc(fdb, collectionName, id), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'test_moved', taskTitle: name, promoName: label, detail: `${fromStatus} → ${status}` });
+    } catch (err) {}
+  }
+
+  function openNewTest(config, status) {
+    const blank = { id: null, status: status || config.statuses[0], __collection: config.collection, __label: config.label };
+    config.fields.forEach((f) => { blank[f.key] = ''; });
+    setTestForm(blank);
+    setTestModal(true);
+  }
+
+  function openEditTest(config, item) {
+    setTestForm({ ...item, __collection: config.collection, __label: config.label });
+    setTestModal(true);
+  }
+
+  async function saveTest() {
+    const config = findTrackerConfig(testForm.__collection);
+    if (!testForm.name || !testForm.name.trim() || !testForm.startDate) return;
+    const data = { status: testForm.status };
+    config.fields.forEach((f) => { data[f.key] = testForm[f.key] || ''; });
+    try {
+      if (testForm.id) await saveExistingTestItem(config.collection, config.label, testForm.id, data);
+      else await addTestItem(config.collection, config.label, data);
+    } catch (err) {
+      window.alert('Could not save this: ' + err.message);
+      return;
+    }
+    setTestModal(false);
+    setTestForm(null);
+  }
+
+  async function deleteTestClick() {
+    if (!testForm.id) return;
+    const config = findTrackerConfig(testForm.__collection);
+    if (!window.confirm(`Delete "${testForm.name}"? This can't be undone.`)) return;
+    try {
+      await removeTestItem(config.collection, config.label, testForm.id, testForm.name);
+    } catch (err) {
+      window.alert('Could not delete this: ' + err.message);
+      return;
+    }
+    setTestModal(false);
+    setTestForm(null);
+  }
+
+  function handleTestDrop(config, items, status) {
+    if (!draggedTestId) return;
+    const item = (items || []).find((it) => it.id === draggedTestId);
+    if (item && item.status !== status) moveTestItem(config.collection, config.label, item.id, item.name, status, item.status);
+    setDraggedTestId(null);
   }
 
   async function resetData() {
@@ -1047,6 +1214,8 @@ function PromotionPlanner({ user }) {
     e('button', { onClick: () => setView('board'), style: tabStyle(view === 'board') }, 'Board'),
     e('button', { onClick: () => setView('timeline'), style: tabStyle(view === 'timeline') }, 'Timeline'),
     e('button', { onClick: () => setView('emails'), style: tabStyle(view === 'emails') }, 'Emails'),
+    e('button', { onClick: () => setView('paid'), style: tabStyle(view === 'paid') }, 'Paid Media Tests'),
+    e('button', { onClick: () => setView('cro'), style: tabStyle(view === 'cro') }, 'CRO/UX Tests'),
     e('button', { onClick: () => setView('activity'), style: tabStyle(view === 'activity') }, 'Activity')
   );
 
@@ -1476,6 +1645,91 @@ function PromotionPlanner({ user }) {
     );
   }
 
+  let testTrackerSection = null;
+  if (view === 'paid' || view === 'cro') {
+    const config = view === 'paid' ? TEST_TRACKERS.paid : TEST_TRACKERS.cro;
+    const items = view === 'paid' ? paidTests : croTests;
+
+    function renderTestCard(item) {
+      return e(
+        'div',
+        {
+          key: item.id,
+          draggable: true,
+          onDragStart: () => setDraggedTestId(item.id),
+          onDragEnd: () => setDraggedTestId(null),
+          onClick: () => openEditTest(config, item),
+          className: `task-card${draggedTestId === item.id ? ' dragging' : ''}`,
+          style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: PURPLE, borderLeftStyle: 'solid' },
+        },
+        e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', fontWeight: 500, lineHeight: 1.35 } }, item.name),
+        item.hypothesis && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.35 } }, item.hypothesis),
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' } },
+          e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, item.assignee || 'Unassigned'),
+          e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, item.startDate ? formatDate(item.startDate) : '')
+        ),
+        item.outcome && item.outcome !== 'TBD' && e('span', {
+          style: {
+            fontSize: '0.6875rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', marginTop: '0.375rem', display: 'inline-block', background: 'var(--surface-alt)',
+            color: item.outcome === 'Win' ? 'var(--success)' : item.outcome === 'Loss' ? 'var(--danger)' : 'var(--text-secondary)',
+          },
+        }, item.outcome)
+      );
+    }
+
+    function renderTestColumn(status, minHeight) {
+      const colItems = (items || []).filter((it) => it.status === status);
+      return e(
+        'div',
+        {
+          key: status,
+          onDragOver: (ev) => ev.preventDefault(),
+          onDrop: () => handleTestDrop(config, items, status),
+          style: { borderRadius: '0.5rem', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
+        },
+        ...colItems.map(renderTestCard),
+        e('button', { onClick: () => openNewTest(config, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, '+ Add test')
+      );
+    }
+
+    let testBoard;
+    if (isMobile) {
+      testBoard = e(
+        'div',
+        null,
+        config.statuses.map((status) => e(
+          'div',
+          { key: status, style: { marginBottom: '0.75rem' } },
+          e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.375rem' } }, status),
+          renderTestColumn(status, '56px')
+        ))
+      );
+    } else {
+      testBoard = e(
+        'div',
+        { style: { display: 'grid', gap: '0.625rem', gridTemplateColumns: `repeat(${config.statuses.length}, 1fr)` } },
+        config.statuses.map((s) => e('div', { key: s, style: { fontSize: '0.875rem', fontWeight: 600, padding: '0 0.5rem 0.25rem', color: 'var(--text-muted)' } }, s)),
+        config.statuses.map((status) => renderTestColumn(status))
+      );
+    }
+
+    testTrackerSection = e(
+      'div',
+      { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem' } },
+      e(
+        'div',
+        { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem' } },
+        e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, config.label),
+        e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
+      ),
+      !items && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      items && testBoard,
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap a test to edit it." : "Drag cards between columns, or click one to edit it.")
+    );
+  }
+
   let activitySection = null;
   if (view === 'activity') {
     activitySection = e(
@@ -1606,6 +1860,29 @@ function PromotionPlanner({ user }) {
     );
   }
 
+  let testModalEl = null;
+  if (testModal && testForm) {
+    const config = findTrackerConfig(testForm.__collection);
+    testModalEl = e(
+      Modal,
+      { title: testForm.id ? `Edit test` : `New test`, onClose: () => { setTestModal(false); setTestForm(null); } },
+      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v })))),
+      e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
+      testForm.id && e(
+        'p',
+        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+        `Created by ${testForm.createdBy || 'unknown'}${testForm.createdAt ? ' · ' + formatDateTime(testForm.createdAt) : ''}`,
+        testForm.updatedBy && e('span', null, e('br'), `Last edited by ${testForm.updatedBy}${testForm.updatedAt ? ' · ' + formatDateTime(testForm.updatedAt) : ''}`)
+      ),
+      e(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+        testForm.id ? e('button', { onClick: deleteTestClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete') : e('span'),
+        e('button', { onClick: saveTest, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+      )
+    );
+  }
+
   return e(
     'div',
     { style: { width: '100%', minHeight: '100vh', background: 'var(--bg)', fontFamily: 'Arial, Helvetica, sans-serif' } },
@@ -1614,10 +1891,12 @@ function PromotionPlanner({ user }) {
     boardSection,
     timelineSection,
     emailsSection,
+    testTrackerSection,
     activitySection,
     taskModalEl,
     promoModalEl,
-    emailModalEl
+    emailModalEl,
+    testModalEl
   );
 }
 
