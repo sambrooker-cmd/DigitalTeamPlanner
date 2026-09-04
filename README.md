@@ -9,7 +9,11 @@ Navigation is organized by team:
 - **Overview** — a unified, read-only timeline rolling up every
   promotion, email, paid media test, and CRO/UX test into one
   chronological view, each row tagged with a team-colored badge. Click a
-  row to jump to it in its own section.
+  row to jump to it in its own section. Searchable by name, filterable
+  by kind (Promotion/Email/Paid Media/CRO-UX) and by assignee — for a
+  promotion, the assignee filter matches if any of its tasks are
+  assigned to that person, since a promotion itself has no single
+  assignee.
 - **Promotions** — cross-team, since every promotion involves all three
   teams: a kanban board (briefing through launch to results reporting)
   and a timeline.
