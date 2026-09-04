@@ -1930,7 +1930,7 @@ function PromotionPlanner({ user }) {
           style: { borderRadius: '0.5rem', padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
         },
         ...items.map(renderEmailCard),
-        e('button', { onClick: () => openNewEmail(status, ''), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, '+ Add email')
+        e('button', { onClick: () => openNewEmail(status, ''), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Reported' ? '+ Add result' : '+ Add email')
       );
     }
 
@@ -2082,7 +2082,7 @@ function PromotionPlanner({ user }) {
           style: { borderRadius: '0.5rem', padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
         },
         ...colItems.map(renderTestCard),
-        e('button', { onClick: () => openNewTest(config, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, '+ Add test')
+        e('button', { onClick: () => openNewTest(config, status), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, status === 'Concluded' ? '+ Add result' : '+ Add test')
       );
     }
 
