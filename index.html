@@ -973,25 +973,25 @@ function PromotionPlanner({ user }) {
     timelinePromotions.forEach((p) => items.push({
       id: `promotion-${p.id}`, kind: 'promotion', name: p.name, dates: taskDates(p), stage: promoStageLabel(p),
       assignees: [...new Set((p.tasks || []).map((t) => t.assignee).filter(Boolean))],
-      onOpen: () => { setActivePromoId(p.id); setSection('promotions'); setPromoView('board'); },
+      onOpen: () => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); },
     }));
     (emails || []).forEach((em) => {
       const d = em.sendDate ? new Date(em.sendDate) : new Date();
       items.push({
         id: `email-${em.id}`, kind: 'email', name: em.subject, dates: { start: d, launch: d, end: d, hasRealEnd: false }, stage: em.status,
         assignees: em.assignee ? [em.assignee] : [],
-        onOpen: () => { setSection('retention'); setEmailView('board'); openEditEmail(em); },
+        onOpen: () => { setSection('boards'); setActiveBoard('retention'); setEmailView('board'); openEditEmail(em); },
       });
     });
     (paidTests || []).forEach((t) => items.push({
       id: `paid-${t.id}`, kind: 'paid', name: t.name, dates: testDates(t), stage: t.status,
       assignees: t.assignee ? [t.assignee] : [],
-      onOpen: () => { setSection('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
+      onOpen: () => { setSection('boards'); setActiveBoard('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
     }));
     (croTests || []).forEach((t) => items.push({
       id: `cro-${t.id}`, kind: 'cro', name: t.name, dates: testDates(t), stage: t.status,
       assignees: t.assignee ? [t.assignee] : [],
-      onOpen: () => { setSection('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
+      onOpen: () => { setSection('boards'); setActiveBoard('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
     }));
     items.sort((a, b) => a.dates.launch.getTime() - b.dates.launch.getTime());
     return items;
@@ -1009,7 +1009,7 @@ function PromotionPlanner({ user }) {
         items.push({
           id: `mytask-${t.id}`, title: t.title, context: p.name, due: t.due, status: t.status,
           badge: team ? { label: team.label, color: team.color, bg: `rgba(${team.rgb}, 0.16)` } : ROLLUP_KINDS.promotion,
-          onOpen: () => { setActivePromoId(p.id); setSection('promotions'); setPromoView('board'); },
+          onOpen: () => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); },
         });
       });
     });
@@ -1017,21 +1017,21 @@ function PromotionPlanner({ user }) {
       if (em.assignee !== email) return;
       items.push({
         id: `myemail-${em.id}`, title: em.subject, context: 'Email', due: em.sendDate, status: em.status, badge: ROLLUP_KINDS.email,
-        onOpen: () => { setSection('retention'); setEmailView('board'); openEditEmail(em); },
+        onOpen: () => { setSection('boards'); setActiveBoard('retention'); setEmailView('board'); openEditEmail(em); },
       });
     });
     (paidTests || []).forEach((t) => {
       if (t.assignee !== email) return;
       items.push({
         id: `mypaid-${t.id}`, title: t.name, context: 'Paid Media Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.paid,
-        onOpen: () => { setSection('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
+        onOpen: () => { setSection('boards'); setActiveBoard('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
       });
     });
     (croTests || []).forEach((t) => {
       if (t.assignee !== email) return;
       items.push({
         id: `mycro-${t.id}`, title: t.name, context: 'CRO/UX Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.cro,
-        onOpen: () => { setSection('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
+        onOpen: () => { setSection('boards'); setActiveBoard('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
       });
     });
     items.sort((a, b) => {
@@ -1100,8 +1100,12 @@ function PromotionPlanner({ user }) {
     }
   }, [promotions]);
 
-  // Top-level navigation is by team; each section remembers its own board/timeline(/calendar) sub-view.
-  const [section, setSection] = useState('promotions'); // 'promotions' | 'acquisition' | 'retention' | 'website' | 'activity'
+  // Top-level navigation is My Work / Overview / Stats / Boards / Activity — the four team
+  // channels (Promotions/Acquisition/Retention/Website) live inside "Boards" behind their own
+  // switcher, rather than each getting its own top-level pill, so each remembers its own
+  // board/timeline(/calendar) sub-view.
+  const [section, setSection] = useState('boards'); // 'mywork' | 'overview' | 'stats' | 'boards' | 'activity'
+  const [activeBoard, setActiveBoard] = useState('promotions'); // 'promotions' | 'acquisition' | 'retention' | 'website'
   const [promoView, setPromoView] = useState('board'); // 'board' | 'timeline'
   const [acqView, setAcqView] = useState('board'); // 'board' | 'timeline' (Paid Media)
   const [webView, setWebView] = useState('board'); // 'board' | 'timeline' (CRO/UX)
@@ -1113,14 +1117,14 @@ function PromotionPlanner({ user }) {
     let items = null;
     let getDates = null;
     if (section === 'overview') { items = rollupItems; getDates = (it) => it.dates; }
-    else if (section === 'promotions' && promoView === 'timeline') { items = timelinePromotions; getDates = taskDates; }
-    else if (section === 'acquisition' && acqView === 'timeline') { items = paidTests || []; getDates = testDates; }
-    else if (section === 'website' && webView === 'timeline') { items = croTests || []; getDates = testDates; }
+    else if (section === 'boards' && activeBoard === 'promotions' && promoView === 'timeline') { items = timelinePromotions; getDates = taskDates; }
+    else if (section === 'boards' && activeBoard === 'acquisition' && acqView === 'timeline') { items = paidTests || []; getDates = testDates; }
+    else if (section === 'boards' && activeBoard === 'website' && webView === 'timeline') { items = croTests || []; getDates = testDates; }
     else return;
     const r = computeRange(items, getDates);
     const dayWidth = isMobile ? 22 : 34;
     timelineScrollRef.current.scrollLeft = Math.max(dayOffsetPx(new Date(), r.min, dayWidth) - 80, 0);
-  }, [section, promoView, acqView, webView, rollupItems, timelinePromotions, paidTests, croTests, isMobile]);
+  }, [section, activeBoard, promoView, acqView, webView, rollupItems, timelinePromotions, paidTests, croTests, isMobile]);
   const [showArchived, setShowArchived] = useState(false);
   const [overviewSearch, setOverviewSearch] = useState('');
   const [overviewKinds, setOverviewKinds] = useState(new Set());
@@ -1719,43 +1723,62 @@ function PromotionPlanner({ user }) {
       : { padding: '0.5rem 1rem', borderRadius: '0.5rem', fontSize: '0.9375rem', fontWeight: 600, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
   }
 
+  // A third, visually distinct tier between the boxed top-level pills and the underline
+  // board/timeline sub-tabs: rounded team-colored chips for picking which channel "Boards" is
+  // showing, so it reads as "one level in" rather than another row of the same boxed pills.
+  // Same tinted-background + colored-text pairing as the team badges used elsewhere (task
+  // cards, My Work, Overview) — not a solid team-color fill with white text, which fails
+  // contrast in dark mode for the lighter dark-mode team colors (as low as ~2.3:1).
+  function boardTabStyle(active, tab) {
+    return active
+      ? { padding: '0.375rem 0.875rem', borderRadius: '999px', fontSize: '0.8125rem', fontWeight: 700, background: tab.bg, color: tab.color, border: `1px solid ${tab.color}`, cursor: 'pointer' }
+      : { padding: '0.375rem 0.875rem', borderRadius: '999px', fontSize: '0.8125rem', fontWeight: 600, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
+  }
+
   const sectionTabs = e(
     'div',
     { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
     e('button', { onClick: () => setSection('mywork'), style: sectionTabStyle(section === 'mywork') }, 'My Work'),
     e('button', { onClick: () => setSection('overview'), style: sectionTabStyle(section === 'overview') }, 'Overview'),
     e('button', { onClick: () => setSection('stats'), style: sectionTabStyle(section === 'stats') }, 'Stats'),
-    e('button', { onClick: () => setSection('promotions'), style: sectionTabStyle(section === 'promotions') }, 'Promotions'),
-    e('button', { onClick: () => setSection('acquisition'), style: sectionTabStyle(section === 'acquisition') }, 'Acquisition'),
-    e('button', { onClick: () => setSection('retention'), style: sectionTabStyle(section === 'retention') }, 'Retention'),
-    e('button', { onClick: () => setSection('website'), style: sectionTabStyle(section === 'website') }, 'Website'),
+    e('button', { onClick: () => setSection('boards'), style: sectionTabStyle(section === 'boards') }, 'Boards'),
     e('button', { onClick: () => setSection('activity'), style: sectionTabStyle(section === 'activity') }, 'Activity')
+  );
+
+  const BOARD_TABS = [
+    { id: 'promotions', label: 'Promotions', color: PURPLE_TEXT, bg: 'var(--surface-alt)' },
+    ...TEAMS.map((t) => ({ id: t.id, label: t.label, color: t.color, bg: `rgba(${t.rgb}, 0.16)` })),
+  ];
+  const boardSwitcher = section === 'boards' && e(
+    'div',
+    { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
+    BOARD_TABS.map((b) => e('button', { key: b.id, onClick: () => setActiveBoard(b.id), style: boardTabStyle(activeBoard === b.id, b) }, b.label))
   );
 
   const subTabPadding = isMobile ? '0.75rem 1rem 1.25rem' : '0.75rem 2rem 1.25rem';
   let subTabs = null;
-  if (section === 'promotions') {
+  if (section === 'boards' && activeBoard === 'promotions') {
     subTabs = e(
       'div',
       { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setPromoView('board'), style: tabStyle(promoView === 'board') }, 'Board'),
       e('button', { onClick: () => setPromoView('timeline'), style: tabStyle(promoView === 'timeline') }, 'Timeline')
     );
-  } else if (section === 'acquisition') {
+  } else if (section === 'boards' && activeBoard === 'acquisition') {
     subTabs = e(
       'div',
       { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setAcqView('board'), style: tabStyle(acqView === 'board') }, 'Board'),
       e('button', { onClick: () => setAcqView('timeline'), style: tabStyle(acqView === 'timeline') }, 'Timeline')
     );
-  } else if (section === 'retention') {
+  } else if (section === 'boards' && activeBoard === 'retention') {
     subTabs = e(
       'div',
       { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setEmailView('board'), style: tabStyle(emailView === 'board') }, 'Board'),
       e('button', { onClick: () => setEmailView('calendar'), style: tabStyle(emailView === 'calendar') }, 'Calendar')
     );
-  } else if (section === 'website') {
+  } else if (section === 'boards' && activeBoard === 'website') {
     subTabs = e(
       'div',
       { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
@@ -1765,7 +1788,7 @@ function PromotionPlanner({ user }) {
   }
 
   let boardSection = null;
-  if (section === 'promotions' && promoView === 'board') {
+  if (section === 'boards' && activeBoard === 'promotions' && promoView === 'board') {
     const archivedCount = promotions.filter((p) => p.archived).length;
     const visibleTabs = promotions.filter((p) => showArchived || !p.archived);
     const promoTabs = e(
@@ -2213,14 +2236,14 @@ function PromotionPlanner({ user }) {
   }
 
   let timelineSection = null;
-  if (section === 'promotions' && promoView === 'timeline') {
+  if (section === 'boards' && activeBoard === 'promotions' && promoView === 'timeline') {
     timelineSection = renderTimelineSection({
       items: timelinePromotions,
       getDates: taskDates,
       getRangeDates: (p) => { const d = taskDates(p); return { start: d.start, end: d.reportEnd }; },
       getName: (p) => p.name,
       getStage: promoStageLabel,
-      onOpenItem: (p) => { setActivePromoId(p.id); setSection('promotions'); setPromoView('board'); },
+      onOpenItem: (p) => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); },
       prepLabel: 'Prep (briefing to review)',
       liveLabel: 'Live (no end date set: estimated at 14 days)',
       launchTitle: 'Launch',
@@ -2231,7 +2254,7 @@ function PromotionPlanner({ user }) {
   }
 
   let emailsSection = null;
-  if (section === 'retention') {
+  if (section === 'boards' && activeBoard === 'retention') {
     function renderEmailCard(email) {
       const promo = email.relatedPromoId ? promotions.find((p) => p.id === email.relatedPromoId) : null;
       return e(
@@ -2379,10 +2402,10 @@ function PromotionPlanner({ user }) {
   }
 
   let testTrackerSection = null;
-  if (section === 'acquisition' || section === 'website') {
-    const config = section === 'acquisition' ? TEST_TRACKERS.paid : TEST_TRACKERS.cro;
-    const items = section === 'acquisition' ? paidTests : croTests;
-    const subView = section === 'acquisition' ? acqView : webView;
+  if (section === 'boards' && (activeBoard === 'acquisition' || activeBoard === 'website')) {
+    const config = activeBoard === 'acquisition' ? TEST_TRACKERS.paid : TEST_TRACKERS.cro;
+    const items = activeBoard === 'acquisition' ? paidTests : croTests;
+    const subView = activeBoard === 'acquisition' ? acqView : webView;
 
     function renderTestCard(item) {
       return e(
@@ -2680,6 +2703,7 @@ function PromotionPlanner({ user }) {
     header,
     dataErrorBanner,
     sectionTabs,
+    boardSwitcher,
     subTabs,
     myWorkSection,
     overviewSection,
