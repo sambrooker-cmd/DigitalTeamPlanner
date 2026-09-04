@@ -304,10 +304,9 @@ function computeRange(promotions) {
   return { min, max };
 }
 
-function pct(date, min, max) {
-  const total = max.getTime() - min.getTime();
-  if (total <= 0) return 0;
-  return ((date.getTime() - min.getTime()) / total) * 100;
+const DAY_MS = 86400000;
+function dayOffsetPx(date, min, dayWidth) {
+  return ((date.getTime() - min.getTime()) / DAY_MS) * dayWidth;
 }
 
 function monthTicks(min, max) {
@@ -403,6 +402,58 @@ function useIsMobile() {
     return () => mq.removeEventListener('change', handler);
   }, []);
   return isMobile;
+}
+
+// Click-and-drag panning for a horizontally-scrollable container (touch already scrolls it
+// natively). A small movement threshold keeps an ordinary click on something inside it working.
+function useDragScroll(ref) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let down = false;
+    let dragging = false;
+    let startX = 0;
+    let startScroll = 0;
+    function onDown(ev) {
+      down = true;
+      dragging = false;
+      startX = ev.pageX;
+      startScroll = el.scrollLeft;
+    }
+    function onMove(ev) {
+      if (!down) return;
+      const dx = ev.pageX - startX;
+      if (!dragging && Math.abs(dx) > 4) {
+        dragging = true;
+        el.style.cursor = 'grabbing';
+        el.style.userSelect = 'none';
+      }
+      if (dragging) {
+        ev.preventDefault();
+        el.scrollLeft = startScroll - dx;
+      }
+    }
+    function onUp() {
+      down = false;
+      el.style.cursor = 'grab';
+      el.style.userSelect = '';
+      if (dragging) {
+        // A real drag ending over a row would otherwise still fire that row's click right
+        // after this — swallow the one click the browser is about to dispatch.
+        const blockClick = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+        window.addEventListener('click', blockClick, { capture: true, once: true });
+      }
+      dragging = false;
+    }
+    el.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      el.removeEventListener('mousedown', onDown);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [ref]);
 }
 
 function usePromotionsCollection() {
@@ -518,6 +569,14 @@ function PromotionPlanner({ user }) {
 
   const [view, setView] = useState('board');
   const activityEntries = useActivityLog(view === 'activity');
+  const timelineScrollRef = useRef(null);
+  useDragScroll(timelineScrollRef);
+  useEffect(() => {
+    if (view !== 'timeline' || !timelineScrollRef.current) return;
+    const r = computeRange(timelinePromotions);
+    const dayWidth = isMobile ? 22 : 34;
+    timelineScrollRef.current.scrollLeft = Math.max(dayOffsetPx(new Date(), r.min, dayWidth) - 80, 0);
+  }, [view, timelinePromotions, isMobile]);
   const [showArchived, setShowArchived] = useState(false);
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
@@ -1046,14 +1105,18 @@ function PromotionPlanner({ user }) {
 
   let timelineSection = null;
   if (view === 'timeline' && range) {
-    const tickEls = ticks.map((t) => e('div', { key: t.toISOString(), style: { position: 'absolute', fontSize: '0.75rem', color: 'var(--text-muted)', left: `${pct(t, range.min, range.max)}%` } }, t.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })));
+    const dayWidth = isMobile ? 22 : 34;
+    const contentWidth = Math.max(dayOffsetPx(range.max, range.min, dayWidth), 1);
+    const todayLeft = dayOffsetPx(today, range.min, dayWidth);
+
+    const tickEls = ticks.map((t) => e('div', { key: t.toISOString(), style: { position: 'absolute', fontSize: '0.75rem', color: 'var(--text-muted)', left: `${dayOffsetPx(t, range.min, dayWidth)}px` } }, t.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })));
 
     const rows = timelinePromotions.map((p) => {
       const { start, launch, end, hasRealEnd } = taskDates(p);
       const stageLabel = promoStageLabel(p);
-      const startPct = pct(start, range.min, range.max);
-      const launchPct = pct(launch, range.min, range.max);
-      const endPct = pct(end, range.min, range.max);
+      const startLeft = dayOffsetPx(start, range.min, dayWidth);
+      const launchLeft = dayOffsetPx(launch, range.min, dayWidth);
+      const endLeft = dayOffsetPx(end, range.min, dayWidth);
       return e(
         'button',
         { key: p.id, onClick: () => { setActivePromoId(p.id); setView('board'); }, style: { width: '100%', textAlign: 'left', marginBottom: '1.5rem', display: 'block', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } },
@@ -1066,10 +1129,10 @@ function PromotionPlanner({ user }) {
         e(
           'div',
           { style: { position: 'relative', height: '24px', borderRadius: '999px', background: 'var(--surface-alt)' } },
-          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startPct}%`, width: `${Math.max(launchPct - startPct, 1)}%`, background: PURPLE_LIGHT } }),
-          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchPct}%`, width: `${Math.max(endPct - launchPct, 1)}%`, background: PURPLE } }),
-          e('div', { title: `Launch ${formatDate(p.launchDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `calc(${launchPct}% - 5px)`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
-          hasRealEnd && e('div', { title: `Ends ${formatDate(p.endDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `calc(${endPct}% - 5px)`, top: '-3px', width: '12px', height: '12px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } })
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: PURPLE_LIGHT } }),
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchLeft}px`, width: `${Math.max(endLeft - launchLeft, 4)}px`, background: PURPLE } }),
+          e('div', { title: `Launch ${formatDate(p.launchDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `${launchLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
+          hasRealEnd && e('div', { title: `Ends ${formatDate(p.endDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `${endLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } })
         )
       );
     });
@@ -1077,12 +1140,29 @@ function PromotionPlanner({ user }) {
     timelineSection = e(
       'div',
       { style: { padding: isMobile ? '1rem' : '1.5rem 2rem' } },
-      e('div', { style: { position: 'relative', marginBottom: '1.5rem', height: '18px' } }, ...tickEls),
       e(
         'div',
-        { style: { position: 'relative', paddingTop: '4px' } },
-        e('div', { style: { position: 'absolute', top: 0, bottom: 0, width: '1px', left: `${pct(today, range.min, range.max)}%`, background: TODAY_COLOR, zIndex: 1 } }),
-        ...rows
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' } },
+        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Drag left or right to see promotions outside the current window.'),
+        e('button', {
+          onClick: () => { if (timelineScrollRef.current) timelineScrollRef.current.scrollLeft = todayLeft - 80; },
+          style: { fontSize: '0.75rem', color: PURPLE_TEXT, background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0, marginLeft: '1rem' },
+        }, 'Jump to today'),
+      ),
+      e(
+        'div',
+        { ref: timelineScrollRef, style: { overflowX: 'auto', cursor: 'grab', paddingBottom: '0.5rem' } },
+        e(
+          'div',
+          { style: { position: 'relative', width: `${contentWidth}px` } },
+          e('div', { style: { position: 'relative', marginBottom: '1.5rem', height: '18px' } }, ...tickEls),
+          e(
+            'div',
+            { style: { position: 'relative', paddingTop: '4px' } },
+            e('div', { style: { position: 'absolute', top: 0, bottom: 0, width: '1px', left: `${todayLeft}px`, background: TODAY_COLOR, zIndex: 1 } }),
+            ...rows
+          )
+        )
       ),
       e(
         'div',
