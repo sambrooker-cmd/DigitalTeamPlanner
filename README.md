@@ -394,12 +394,25 @@ simply never been deleted; nothing is backfilled or required at creation
 time. See "Recently Deleted" above for the UI this powers.
 
 - `promotions/{promoId}` — one document per promotion (`name`, `launchDate`,
-  `endDate` (optional), `description`, `archived` (boolean), plus
-  `createdBy`/`createdAt`/`updatedBy`/`updatedAt`). When `endDate` isn't
-  set, the timeline estimates the promotion runs 14 days from launch.
+  `endDate` (optional), `description`, `parentPromoId` (optional, links it
+  to another promotion as its umbrella/central one), `archived` (boolean),
+  plus `createdBy`/`createdAt`/`updatedBy`/`updatedAt`). When `endDate`
+  isn't set, the timeline estimates the promotion runs 14 days from launch.
   Archived promotions are hidden from the timeline and, by default, from
-  the board's promotion tabs (a "Show archived" toggle reveals them there
-  so they can be unarchived or deleted).
+  the board's promotion picker (a "Show archived" toggle reveals them
+  there so they can be unarchived or deleted).
+
+  For a big umbrella campaign (Wave Season, say) running several distinct
+  sub-promotions underneath it, a promotion can name another promotion as
+  its `parentPromoId`. The parent's board shows a **Sub-promotions**
+  section listing all of them (same pattern as Linked work below — click
+  one to jump straight to it, "+ Sub-promotion" to add one pre-linked),
+  and a sub-promotion's own board shows a small **"Part of [Parent
+  name]"** badge linking back up. It's a single level (a sub-promotion's
+  own `parentPromoId` isn't itself walked further), which is all the
+  central/sub-promotion structure calls for — nothing elsewhere (Overview,
+  Stats, My Work, search) currently groups or indents by this relationship,
+  it's purely a link between the two promotions' own boards.
 - `promotions/{promoId}/tasks/{taskId}` — one document per task/result card
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never
