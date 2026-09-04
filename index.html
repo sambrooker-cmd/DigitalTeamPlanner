@@ -675,15 +675,16 @@ function useEmailsCollection() {
 // effect in PromotionPlanner), rather than needing to be pre-populated.
 function useUsersDirectory() {
   const [users, setUsers] = useState(null); // null = loading
+  const [error, setError] = useState(null);
   useEffect(() => {
     const unsub = onSnapshot(
       collection(fdb, 'users'),
-      (snap) => setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      () => setUsers((prev) => prev || [])
+      (snap) => { setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setUsers((prev) => prev || []); setError(err.message || 'Could not load the team directory.'); }
     );
     return unsub;
   }, []);
-  return users;
+  return { users, error };
 }
 
 // Generic top-level collection listener, used by both test trackers (paidTests, croTests).
@@ -704,6 +705,9 @@ function useCollectionDocs(collectionName, orderField) {
 
 function useTasksByPromo(promoIds) {
   const [tasksByPromo, setTasksByPromo] = useState({});
+  // promoId -> error message, for a promotion whose tasks subscription failed — kept separate
+  // so a promotion that genuinely has no tasks yet doesn't look the same as one that failed to load.
+  const [errors, setErrors] = useState({});
   const unsubsRef = useRef({});
   const idsKey = promoIds.join(',');
   useEffect(() => {
@@ -715,8 +719,11 @@ function useTasksByPromo(promoIds) {
           (snap) => {
             const tasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
             setTasksByPromo((prev) => ({ ...prev, [id]: tasks }));
+            setErrors((prev) => (id in prev ? (() => { const next = { ...prev }; delete next[id]; return next; })() : prev));
           },
-          () => {}
+          (err) => {
+            setErrors((prev) => ({ ...prev, [id]: err.message || 'Could not load tasks.' }));
+          }
         );
       }
     });
@@ -725,11 +732,12 @@ function useTasksByPromo(promoIds) {
         unsubsRef.current[id]();
         delete unsubsRef.current[id];
         setTasksByPromo((prev) => { const next = { ...prev }; delete next[id]; return next; });
+        setErrors((prev) => (id in prev ? (() => { const next = { ...prev }; delete next[id]; return next; })() : prev));
       }
     });
   }, [idsKey]);
   useEffect(() => () => { Object.values(unsubsRef.current).forEach((fn) => fn()); }, []);
-  return tasksByPromo;
+  return { tasksByPromo, errors };
 }
 
 function useActivityLog(active) {
@@ -754,7 +762,7 @@ function PromotionPlanner({ user }) {
   const pagePadding = isMobile ? '1rem' : '1.5rem 2rem';
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
-  const users = useUsersDirectory();
+  const { users, error: usersError } = useUsersDirectory();
 
   // Registers/refreshes this viewer in the team directory (used to populate assignee
   // dropdowns) — organic, no admin step needed. Runs once per sign-in.
@@ -768,7 +776,7 @@ function PromotionPlanner({ user }) {
 
   const { docs: promoDocs, error: promoDocsError } = usePromotionsCollection();
   const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
-  const tasksByPromo = useTasksByPromo(promoIds);
+  const { tasksByPromo, errors: taskErrors } = useTasksByPromo(promoIds);
   const { docs: emails, error: emailsError } = useEmailsCollection();
   const { docs: paidTests, error: paidTestsError } = useCollectionDocs('paidTests', 'startDate');
   const { docs: croTests, error: croTestsError } = useCollectionDocs('croTests', 'startDate');
@@ -1649,6 +1657,7 @@ function PromotionPlanner({ user }) {
             promoStatusText && e('div', { style: { fontSize: '0.75rem', marginTop: '0.25rem', color: promoStatusColor } }, promoStatusText)
           )
         ),
+        taskErrors[activePromo.id] && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', marginBottom: '1rem' } }, `Couldn't load tasks for this promotion: ${taskErrors[activePromo.id]}. What's shown below may be missing cards.`),
         typeFilters,
         board,
         e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit.")
@@ -2289,6 +2298,8 @@ function PromotionPlanner({ user }) {
     emailsError && 'emails',
     paidTestsError && 'paid media tests',
     croTestsError && 'CRO/UX tests',
+    usersError && 'the team directory',
+    Object.keys(taskErrors).length > 0 && (Object.keys(taskErrors).length === 1 ? 'one promotion\'s tasks' : `${Object.keys(taskErrors).length} promotions' tasks`),
   ].filter(Boolean);
   const dataErrorBanner = dataErrors.length > 0 && e(
     'div',
