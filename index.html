@@ -2157,6 +2157,18 @@ function PromotionPlanner({ user }) {
     setPromoForm(null);
   }
 
+  // Rules of Hooks: these must run unconditionally on every render, so they have to sit above
+  // the loading-gate `return` just below — not down near the modals they're actually for. They
+  // were briefly placed after that gate and it broke exactly this way: React calls a different
+  // number of hooks on the "still loading" render vs. the "loaded" render, throws, and — with no
+  // error boundary anywhere in this app — the whole page goes blank with nothing in the console
+  // to point at except a hooks-order warning. Each of the four still only actually subscribes to
+  // anything once its own form has a real id (see useItemHistory).
+  const taskHistory = useItemHistory('taskId', taskForm ? taskForm.id : null);
+  const promoHistory = useItemHistory('promoId', promoForm ? promoForm.id : null);
+  const emailHistory = useItemHistory('emailId', emailForm ? emailForm.id : null);
+  const testHistory = useItemHistory('testId', testForm ? testForm.id : null);
+
   if (!promotions) {
     return e(
       'div',
@@ -3244,13 +3256,6 @@ function PromotionPlanner({ user }) {
       )
     );
   }
-
-  // Called unconditionally every render (Rules of Hooks) regardless of which modal, if any, is
-  // open — each only actually subscribes once its own form has a real id (see useItemHistory).
-  const taskHistory = useItemHistory('taskId', taskForm ? taskForm.id : null);
-  const promoHistory = useItemHistory('promoId', promoForm ? promoForm.id : null);
-  const emailHistory = useItemHistory('emailId', emailForm ? emailForm.id : null);
-  const testHistory = useItemHistory('testId', testForm ? testForm.id : null);
 
   let taskModalEl = null;
   if (taskModal && taskForm) {
