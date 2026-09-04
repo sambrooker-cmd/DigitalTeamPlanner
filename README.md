@@ -3,6 +3,9 @@
 A shared planning tool for the Acquisition, Retention, and Website teams.
 Navigation is organized by team:
 
+- **My Work** — everything assigned to the signed-in viewer (promotion
+  tasks, emails, paid media tests, CRO/UX tests), soonest due date
+  first, overdue items in red.
 - **Overview** — a unified, read-only timeline rolling up every
   promotion, email, paid media test, and CRO/UX test into one
   chronological view, each row tagged with a team-colored badge. Click a
@@ -104,6 +107,11 @@ service cloud.firestore {
       allow read: if request.auth != null && request.auth.token.email == email;
       allow write: if false;
     }
+
+    match /users/{email} {
+      allow read: if isAllowed();
+      allow write: if request.auth != null && request.auth.token.email == email && isAllowed();
+    }
   }
 }
 ```
@@ -156,6 +164,14 @@ by these rules server-side, not just hidden in the UI.
   **Activity** tab (last 100 entries).
 - `allowlist/{email}` — access control, managed only from the Firebase
   console (see above).
+- `users/{email}` — the team directory that powers assignee dropdowns
+  and My Work. Each person writes only their own document (`email`,
+  `displayName`, `lastSeen`) the moment they sign in — nothing to
+  pre-populate. Assignee fields store this email (not a free-typed
+  name), so "assigned to me" can match reliably; a value that doesn't
+  match anyone in the directory (an old free-text name, or a teammate
+  who hasn't signed in yet) still shows up as a selectable option on
+  that record rather than being silently dropped.
 - `meta/seed` — a sentinel document used once, to guard against seeding
   sample data twice if two people open an empty board at the same moment.
 

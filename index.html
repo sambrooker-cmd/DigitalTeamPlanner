@@ -174,7 +174,7 @@ const TEST_TRACKERS = {
       { key: 'startDate', label: 'Start date', type: 'date', required: true },
       { key: 'endDate', label: 'End date', type: 'date' },
       { key: 'budget', label: 'Budget', type: 'text', placeholder: 'e.g. £500/day' },
-      { key: 'assignee', label: 'Assignee', type: 'text' },
+      { key: 'assignee', label: 'Assignee', type: 'user' },
       { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_OPTIONS },
       { key: 'result', label: 'Result / learning', type: 'textarea', placeholder: 'What happened, key metrics, what to repeat or change next time' },
     ],
@@ -191,7 +191,7 @@ const TEST_TRACKERS = {
       { key: 'metric', label: 'Primary metric', type: 'text', placeholder: 'e.g. Conversion rate' },
       { key: 'startDate', label: 'Start date', type: 'date', required: true },
       { key: 'endDate', label: 'End date', type: 'date' },
-      { key: 'assignee', label: 'Assignee', type: 'text' },
+      { key: 'assignee', label: 'Assignee', type: 'user' },
       { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_OPTIONS },
       { key: 'result', label: 'Result / learning', type: 'textarea', placeholder: 'What happened, key metrics, ship decision' },
     ],
@@ -364,8 +364,28 @@ function Field({ label, children }) {
 
 const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', fontSize: '0.875rem', outline: 'none', fontFamily: 'inherit', background: 'var(--surface)', color: 'var(--text-primary)' };
 
+// A dropdown of real team members (from the `users` directory), storing their email — a
+// reliable key "My work" can filter on, unlike free-typed names. Keeps whatever value is
+// already on the record as a selectable option even if it doesn't match anyone in the
+// directory (an old free-text name, or someone who hasn't signed in yet), so opening and
+// re-saving a card never silently wipes it.
+function renderAssigneeSelect(value, onChange, users) {
+  const options = (users || []).slice().sort((a, b) => (a.displayName || a.email).localeCompare(b.displayName || b.email));
+  const hasCurrent = !value || options.some((u) => u.email === value);
+  return e(
+    'select',
+    { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) },
+    e('option', { value: '' }, 'Unassigned'),
+    !hasCurrent && e('option', { value }, value),
+    options.map((u) => e('option', { key: u.email, value: u.email }, u.displayName || u.email))
+  );
+}
+
 // Renders one input for a config-driven test-tracker field (see TEST_TRACKERS).
-function renderTestFieldInput(field, value, onChange) {
+function renderTestFieldInput(field, value, onChange, users) {
+  if (field.type === 'user') {
+    return renderAssigneeSelect(value, onChange, users);
+  }
   if (field.type === 'select') {
     return e('select', { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) }, field.options.map((o) => e('option', { key: o, value: o }, o)));
   }
@@ -613,6 +633,21 @@ function useEmailsCollection() {
   return docs;
 }
 
+// The team directory — builds itself organically as people sign in (see the self-registration
+// effect in PromotionPlanner), rather than needing to be pre-populated.
+function useUsersDirectory() {
+  const [users, setUsers] = useState(null); // null = loading
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(fdb, 'users'),
+      (snap) => setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      () => setUsers((prev) => prev || [])
+    );
+    return unsub;
+  }, []);
+  return users;
+}
+
 // Generic top-level collection listener, used by both test trackers (paidTests, croTests).
 function useCollectionDocs(collectionName, orderField) {
   const [docs, setDocs] = useState(null); // null = loading
@@ -675,6 +710,13 @@ function PromotionPlanner({ user }) {
   const pagePadding = isMobile ? '1rem' : '1.5rem 2rem';
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
+  const users = useUsersDirectory();
+
+  // Registers/refreshes this viewer in the team directory (used to populate assignee
+  // dropdowns) — organic, no admin step needed. Runs once per sign-in.
+  useEffect(() => {
+    setDoc(doc(fdb, 'users', user.email), { email: user.email, displayName: user.displayName || user.email, lastSeen: serverTimestamp() }, { merge: true }).catch(() => {});
+  }, [user.email, user.displayName]);
 
   async function logActivity(entry) {
     try { await addDoc(collection(fdb, 'activity'), { ...entry, by: actorName, at: serverTimestamp() }); } catch (err) {}
@@ -746,6 +788,51 @@ function PromotionPlanner({ user }) {
     items.sort((a, b) => a.dates.launch.getTime() - b.dates.launch.getTime());
     return items;
   }, [timelinePromotions, emails, paidTests, croTests]);
+
+  // Everything assigned to the signed-in viewer, across tasks (not whole promotions —
+  // assignment lives at the task level there) plus emails and both test trackers.
+  const myWorkItems = useMemo(() => {
+    const email = user.email;
+    const items = [];
+    timelinePromotions.forEach((p) => {
+      (p.tasks || []).forEach((t) => {
+        if (t.assignee !== email) return;
+        const team = TEAMS.find((tm) => tm.id === t.team);
+        items.push({
+          id: `mytask-${t.id}`, title: t.title, context: p.name, due: t.due, status: t.status,
+          badge: team ? { label: team.label, color: team.color, bg: `rgba(${team.rgb}, 0.16)` } : ROLLUP_KINDS.promotion,
+          onOpen: () => { setActivePromoId(p.id); setSection('promotions'); setPromoView('board'); },
+        });
+      });
+    });
+    (emails || []).forEach((em) => {
+      if (em.assignee !== email) return;
+      items.push({
+        id: `myemail-${em.id}`, title: em.subject, context: 'Email', due: em.sendDate, status: em.status, badge: ROLLUP_KINDS.email,
+        onOpen: () => { setSection('retention'); setEmailView('board'); openEditEmail(em); },
+      });
+    });
+    (paidTests || []).forEach((t) => {
+      if (t.assignee !== email) return;
+      items.push({
+        id: `mypaid-${t.id}`, title: t.name, context: 'Paid Media Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.paid,
+        onOpen: () => { setSection('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
+      });
+    });
+    (croTests || []).forEach((t) => {
+      if (t.assignee !== email) return;
+      items.push({
+        id: `mycro-${t.id}`, title: t.name, context: 'CRO/UX Test', due: t.startDate, status: t.status, badge: ROLLUP_KINDS.cro,
+        onOpen: () => { setSection('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
+      });
+    });
+    items.sort((a, b) => {
+      const at = a.due ? new Date(a.due).getTime() : Infinity;
+      const bt = b.due ? new Date(b.due).getTime() : Infinity;
+      return at - bt;
+    });
+    return items;
+  }, [timelinePromotions, emails, paidTests, croTests, user.email]);
 
   const [activePromoId, setActivePromoId] = useState(null);
   useEffect(() => {
@@ -1295,6 +1382,7 @@ function PromotionPlanner({ user }) {
   const sectionTabs = e(
     'div',
     { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
+    e('button', { onClick: () => setSection('mywork'), style: sectionTabStyle(section === 'mywork') }, 'My Work'),
     e('button', { onClick: () => setSection('overview'), style: sectionTabStyle(section === 'overview') }, 'Overview'),
     e('button', { onClick: () => setSection('promotions'), style: sectionTabStyle(section === 'promotions') }, 'Promotions'),
     e('button', { onClick: () => setSection('acquisition'), style: sectionTabStyle(section === 'acquisition') }, 'Acquisition'),
@@ -1626,6 +1714,47 @@ function PromotionPlanner({ user }) {
     );
   }
 
+  let myWorkSection = null;
+  if (section === 'mywork') {
+    myWorkSection = e(
+      'div',
+      { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem', maxWidth: '48rem' } },
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, `Everything assigned to ${actorName} across Promotions, Emails, Paid Media, and CRO/UX — soonest first.`),
+      myWorkItems.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Nothing assigned to you right now.'),
+      myWorkItems.length > 0 && e(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } },
+        myWorkItems.map((it) => {
+          const overdue = it.due && daysUntil(it.due) < 0;
+          return e(
+            'div',
+            {
+              key: it.id,
+              role: 'button',
+              tabIndex: 0,
+              onClick: it.onOpen,
+              onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); } },
+              style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)' },
+            },
+            e(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' } },
+              e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, it.title),
+              e('span', { style: { fontSize: '0.75rem', color: overdue ? 'var(--danger)' : 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' } }, it.due ? formatDate(it.due) : 'No date')
+            ),
+            e(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.375rem', marginTop: '0.375rem' } },
+              e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: it.badge.bg, color: it.badge.color, fontWeight: 600 } }, it.badge.label),
+              e('span', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)' } }, it.context),
+              e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, `· ${it.status}`)
+            )
+          );
+        })
+      )
+    );
+  }
+
   let overviewSection = null;
   if (section === 'overview') {
     overviewSection = renderTimelineSection({
@@ -1944,7 +2073,7 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Assignee' }, e('input', { style: inputStyle, value: taskForm.assignee, onChange: (ev) => setTaskForm({ ...taskForm, assignee: ev.target.value }) })),
+        e(Field, { label: 'Assignee' }, renderAssigneeSelect(taskForm.assignee, (v) => setTaskForm({ ...taskForm, assignee: v }), users)),
         e(Field, { label: 'Due date' }, e('input', { type: 'date', style: inputStyle, value: taskForm.due, onChange: (ev) => setTaskForm({ ...taskForm, due: ev.target.value }) }))
       ),
       e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: taskForm.status, onChange: (ev) => setTaskForm({ ...taskForm, status: ev.target.value }) }, STATUSES.map((s) => e('option', { key: s, value: s }, s)))),
@@ -2011,7 +2140,7 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Assignee' }, e('input', { style: inputStyle, value: emailForm.assignee, onChange: (ev) => setEmailForm({ ...emailForm, assignee: ev.target.value }) })),
+        e(Field, { label: 'Assignee' }, renderAssigneeSelect(emailForm.assignee, (v) => setEmailForm({ ...emailForm, assignee: v }), users)),
         e(Field, { label: 'Related promotion (optional)' }, e(
           'select',
           { style: inputStyle, value: emailForm.relatedPromoId || '', onChange: (ev) => setEmailForm({ ...emailForm, relatedPromoId: ev.target.value }) },
@@ -2042,7 +2171,7 @@ function PromotionPlanner({ user }) {
     testModalEl = e(
       Modal,
       { title: testForm.id ? `Edit test` : `New test`, onClose: () => { setTestModal(false); setTestForm(null); } },
-      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v })))),
+      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users))),
       e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
       testForm.id && e(
         'p',
@@ -2065,6 +2194,7 @@ function PromotionPlanner({ user }) {
     header,
     sectionTabs,
     subTabs,
+    myWorkSection,
     overviewSection,
     boardSection,
     timelineSection,
