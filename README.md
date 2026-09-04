@@ -55,7 +55,17 @@ modal — it pre-fills a new, unsaved copy (dates and result fields cleared,
 nothing else) so a repeat promotion or test doesn't mean re-typing the whole
 form; nothing is written until you adjust it and hit Save. Each of those
 also carries its own **comment thread**, for back-and-forth that would
-otherwise overwrite the single free-text notes field. Promotions, Emails,
+otherwise overwrite the single free-text notes field — type `@Name` (or
+just `@FirstName`) to mention a teammate; it's highlighted in the thread and
+the comment itself is visually called out for them, though nothing is
+pushed to them outside the app yet. Deleting a promotion, task, email, or
+test shows an **Undo** on its toast for a few seconds — the record isn't
+actually removed from Firestore until that window passes, so Undo is exact,
+not a re-creation. Each of those edit screens also has a collapsed
+**History** section — that item's own slice of the Activity log, so you
+don't have to scroll the full log to see what happened to just this one
+(starts from when this shipped; older activity wasn't tagged with an item
+id to filter by). Promotions, Emails,
 Paid Media, and CRO/UX each have an **Export CSV** button (on the
 promotion's board, and by the "+ New…" button on the other three) for
 pulling the current data into a deck or report. Emails and Promotions also
@@ -277,12 +287,16 @@ by these rules server-side, not just hidden in the UI.
   (`promotions/{promoId}/comments`, `promotions/{promoId}/tasks/{taskId}/comments`,
   `emails/{emailId}/comments`, `paidTests/{testId}/comments`,
   `croTests/{testId}/comments`). Each comment is `text`, `by`, `byEmail`,
-  `at` — anyone on the allowlist can read and post; only the author (matched
-  on `byEmail`) can delete their own comment. Not shown in the Activity log,
-  which tracks structural changes rather than conversation.
+  `mentions` (emails of anyone `@mentioned` in the text, matched against the
+  team directory), `at` — anyone on the allowlist can read and post; only
+  the author (matched on `byEmail`) can delete their own comment. Not shown
+  in the Activity log, which tracks structural changes rather than
+  conversation.
 - `activity/{entryId}` — an append-only change log: one document per create,
   edit, move, or delete anywhere on the board (`action`, `by`, `at`,
-  `promoName`, `taskTitle`, `detail`). Shown newest-first under the
+  `promoName`, `taskTitle`, `detail`, plus `promoId`/`taskId`/`emailId`/
+  `testId` where relevant, so each item's own edit screen can show a
+  filtered History of just itself). Shown newest-first under the
   **Activity** tab (last 100 entries).
 - `allowlist/{email}` — access control, managed only from the Firebase
   console (see above).

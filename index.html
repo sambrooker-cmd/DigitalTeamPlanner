@@ -125,7 +125,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
   getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
-  getDoc, getDocs, onSnapshot, query, orderBy, limit, runTransaction, serverTimestamp,
+  getDoc, getDocs, onSnapshot, query, orderBy, where, limit, runTransaction, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
@@ -567,6 +567,24 @@ function formatDateTime(ts) {
   return ts.toDate().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+// One activity-log entry — shared by the full Activity tab and the compact per-item History
+// section in each edit modal (`compact` just tightens the type size and drops the divider,
+// since History already sits inside its own bordered/scrollable box).
+function ActivityEntryRow({ entry, compact }) {
+  return e(
+    'div',
+    { style: compact ? { fontSize: '0.75rem', color: 'var(--text-primary)' } : { padding: '0.625rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.875rem', color: 'var(--text-primary)' } },
+    e('span', { style: { fontWeight: 600 } }, entry.by || 'Someone'),
+    ' ',
+    ACTION_LABELS[entry.action] || entry.action,
+    ' ',
+    (entry.taskTitle || entry.promoName) && e('span', { style: { fontStyle: 'italic' } }, `"${entry.taskTitle || entry.promoName}"`),
+    entry.taskTitle && entry.promoName && e('span', { style: { color: 'var(--text-secondary)' } }, ` in ${entry.promoName}`),
+    entry.detail && e('span', { style: { color: 'var(--text-secondary)' } }, ` (${entry.detail})`),
+    e('div', { style: { fontSize: compact ? '0.6875rem' : '0.75rem', color: 'var(--text-muted)', marginTop: '0.125rem' } }, formatDateTime(entry.at))
+  );
+}
+
 // --- CSV export: columns is [{ label, get(row) }], rows is any array of plain objects. ---
 function rowsToCSV(rows, columns) {
   const esc = (v) => {
@@ -947,9 +965,12 @@ function useTasksByPromo(promoIds) {
 // yelling at you, not the app talking to you. Auto-dismisses; also closeable by hand.
 function useToasts() {
   const [toasts, setToasts] = useState([]);
-  function pushToast(message, tone) {
+  // options: { actionLabel, onAction } — an optional inline action (e.g. "Undo") shown
+  // alongside the message, for as long as the toast itself is on screen.
+  function pushToast(message, tone, options) {
     const id = genId();
-    setToasts((prev) => [...prev, { id, message, tone: tone || 'error' }]);
+    const { actionLabel, onAction } = options || {};
+    setToasts((prev) => [...prev, { id, message, tone: tone || 'error', actionLabel, onAction }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 6000);
   }
   function dismissToast(id) {
@@ -976,6 +997,10 @@ function ToastStack({ toasts, onDismiss }) {
         },
       },
       e('span', { style: { flex: 1, lineHeight: 1.4 } }, t.message),
+      t.actionLabel && e('button', {
+        onClick: () => { if (t.onAction) t.onAction(); onDismiss(t.id); },
+        style: { background: 'none', border: 'none', color: PURPLE_TEXT, fontWeight: 700, fontSize: '0.8125rem', cursor: 'pointer', padding: 0, flexShrink: 0 },
+      }, t.actionLabel),
       e('button', {
         onClick: () => onDismiss(t.id),
         'aria-label': 'Dismiss',
@@ -983,6 +1008,41 @@ function ToastStack({ toasts, onDismiss }) {
       }, '×')
     ))
   );
+}
+
+// Delete-with-undo: hides the item locally right away (via the returned pendingKeys set, which
+// callers filter their lists by) and defers the real Firestore delete for a few seconds behind
+// a toast's "Undo" action. Nothing is actually removed unless that window elapses without
+// Undo being clicked, so replaces window.confirm on these deletes rather than stacking with it.
+function useUndoableDelete(pushToast) {
+  const [pendingKeys, setPendingKeys] = useState(new Set());
+  const timersRef = useRef({});
+
+  useEffect(() => () => { Object.values(timersRef.current).forEach(clearTimeout); }, []);
+
+  function deleteWithUndo(key, label, performDelete) {
+    setPendingKeys((prev) => new Set(prev).add(key));
+    const timer = setTimeout(async () => {
+      delete timersRef.current[key];
+      try {
+        await performDelete();
+      } catch (err) {
+        pushToast(`Could not delete "${label}": ` + err.message);
+      }
+      setPendingKeys((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }, 6000);
+    timersRef.current[key] = timer;
+    pushToast(`Deleted "${label}".`, 'info', {
+      actionLabel: 'Undo',
+      onAction: () => {
+        clearTimeout(timersRef.current[key]);
+        delete timersRef.current[key];
+        setPendingKeys((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      },
+    });
+  }
+
+  return { pendingKeys, deleteWithUndo };
 }
 
 function useActivityLog(active) {
@@ -999,6 +1059,58 @@ function useActivityLog(active) {
     return unsub;
   }, [active]);
   return { entries, error };
+}
+
+// Per-item history — a filtered slice of the activity log for one specific task/promotion/
+// email/test, so a modal can show "what happened to this" without scrolling the full Activity
+// tab. Matched on the item's own id (taskId/promoId/emailId/testId), which older entries logged
+// before this existed won't have — those just don't show up here; history starts from when this
+// shipped, same as any schema addition. A single equality filter needs no composite index
+// (unlike filter+orderBy on a different field), so results are sorted client-side instead.
+function useItemHistory(field, id) {
+  const [entries, setEntries] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!field || !id) { setEntries(null); setError(null); return; }
+    const q = query(collection(fdb, 'activity'), where(field, '==', id));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => {
+          const at = a.at && typeof a.at.toMillis === 'function' ? a.at.toMillis() : 0;
+          const bt = b.at && typeof b.at.toMillis === 'function' ? b.at.toMillis() : 0;
+          return bt - at;
+        });
+        setEntries(list);
+        setError(null);
+      },
+      (err) => { setEntries((prev) => prev || []); setError(err.message || 'Could not load history.'); }
+    );
+    return unsub;
+  }, [field, id]);
+  return { entries, error };
+}
+
+// Collapsed by default so it doesn't crowd an already-full modal — click to expand.
+function HistorySection({ entries, error }) {
+  const [open, setOpen] = useState(false);
+  return e(
+    'div',
+    { style: { marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' } },
+    e('button', {
+      onClick: () => setOpen((o) => !o),
+      style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: '0.25rem' },
+    }, `${open ? '▾' : '▸'} History${entries && entries.length ? ` (${entries.length})` : ''}`),
+    open && e(
+      'div',
+      { style: { marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '10rem', overflowY: 'auto' } },
+      error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load history: ${error}`),
+      !entries && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      entries && entries.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No history recorded yet.'),
+      entries && entries.length > 0 && entries.map((entry) => e(ActivityEntryRow, { key: entry.id, entry, compact: true }))
+    )
+  );
 }
 
 // A comment thread lives at pathSegments (e.g. ['promotions', promoId, 'comments'] or
@@ -1023,10 +1135,62 @@ function useComments(pathSegments) {
   return { comments, error };
 }
 
+// @mentions in comments: "@Name" or "@FirstName" recognized against the team directory — no
+// autocomplete, just highlighting of names that already exist, plus recording which users were
+// mentioned on the comment doc itself so a future notification feature has something to read
+// without re-parsing every comment's text.
+function mentionRegex(users) {
+  const list = (users || []).filter((u) => u.displayName || u.email);
+  if (!list.length) return null;
+  const tokens = new Set();
+  list.forEach((u) => {
+    const name = u.displayName || u.email;
+    tokens.add(name);
+    const first = name.split(' ')[0];
+    if (first) tokens.add(first);
+  });
+  // Longest names first so "@Sam Brooker" matches whole before "@Sam" would grab just the start.
+  const sorted = Array.from(tokens).sort((a, b) => b.length - a.length);
+  const escaped = sorted.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`@(${escaped.join('|')})\\b`, 'gi');
+}
+
+function renderCommentText(text, users) {
+  const re = mentionRegex(users);
+  if (!re || !text) return text;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+  let key = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    parts.push(e('strong', { key: key++, style: { color: PURPLE_TEXT, fontWeight: 700 } }, `@${match[1]}`));
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts.length ? parts : text;
+}
+
+function mentionedEmails(text, users) {
+  const re = mentionRegex(users);
+  if (!re || !text) return [];
+  const found = new Set();
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const token = match[1].toLowerCase();
+    const u = (users || []).find((u2) => {
+      const name = u2.displayName || u2.email;
+      return name.toLowerCase() === token || name.split(' ')[0].toLowerCase() === token;
+    });
+    if (u) found.add(u.email);
+  }
+  return Array.from(found);
+}
+
 // Reusable comment thread, dropped into any modal for an already-saved item (pathSegments
 // points at that item's own 'comments' subcollection). Anyone on the allowlist can read every
 // comment; only the author can delete their own.
-function CommentsThread({ pathSegments, currentUserEmail, currentUserName, pushToast }) {
+function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users, pushToast }) {
   const { comments, error } = useComments(pathSegments);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1043,7 +1207,8 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, pushT
     if (!text.trim() || busy) return;
     setBusy(true);
     try {
-      await addDoc(collection(fdb, ...pathSegments), { text: text.trim(), by: currentUserName, byEmail: currentUserEmail, at: serverTimestamp() });
+      const trimmed = text.trim();
+      await addDoc(collection(fdb, ...pathSegments), { text: trimmed, by: currentUserName, byEmail: currentUserEmail, mentions: mentionedEmails(trimmed, users), at: serverTimestamp() });
       setText('');
     } catch (err) {
       pushToast('Could not post comment: ' + err.message);
@@ -1071,21 +1236,31 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, pushT
     comments && comments.length > 0 && e(
       'div',
       { ref: listRef, style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
-      comments.map((c) => e(
-        'div',
-        { key: c.id, style: { fontSize: '0.8125rem', background: 'var(--surface-alt)', borderRadius: '0.5rem', padding: '0.5rem 0.625rem' } },
-        e(
+      comments.map((c) => {
+        const youWereMentioned = (c.mentions || []).includes(currentUserEmail);
+        return e(
           'div',
-          { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
-          e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
-          e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
-        ),
-        e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, c.text),
-        c.byEmail === currentUserEmail && e('button', {
-          onClick: () => removeComment(c.id),
-          style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
-        }, 'Delete')
-      ))
+          {
+            key: c.id,
+            style: {
+              fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem',
+              background: youWereMentioned ? 'var(--surface-tint)' : 'var(--surface-alt)',
+              border: youWereMentioned ? `1px solid ${PURPLE}` : '1px solid transparent',
+            },
+          },
+          e(
+            'div',
+            { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
+            e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
+            e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
+          ),
+          e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, renderCommentText(c.text, users)),
+          c.byEmail === currentUserEmail && e('button', {
+            onClick: () => removeComment(c.id),
+            style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
+          }, 'Delete')
+        );
+      })
     ),
     e(
       'div',
@@ -1094,7 +1269,7 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, pushT
         style: { ...inputStyle, flex: 1, minHeight: '2.25rem', resize: 'vertical' },
         rows: 2,
         value: text,
-        placeholder: 'Add a comment… (Shift+Enter for a new line)',
+        placeholder: 'Add a comment… (Shift+Enter for a new line, @Name to mention someone)',
         onChange: (ev) => setText(ev.target.value),
         onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } },
       }),
@@ -1115,6 +1290,7 @@ function PromotionPlanner({ user }) {
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
   const { toasts, pushToast, dismissToast } = useToasts();
+  const { pendingKeys: pendingDeleteKeys, deleteWithUndo } = useUndoableDelete(pushToast);
   const { users, error: usersError } = useUsersDirectory();
 
   // Registers/refreshes this viewer in the team directory (used to populate assignee
@@ -1130,10 +1306,17 @@ function PromotionPlanner({ user }) {
   const { docs: promoDocs, error: promoDocsError } = usePromotionsCollection();
   const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
   const { tasksByPromo, errors: taskErrors } = useTasksByPromo(promoIds);
-  const { docs: emails, error: emailsError } = useEmailsCollection();
-  const { docs: paidTests, error: paidTestsError } = useCollectionDocs('paidTests', 'startDate');
-  const { docs: croTests, error: croTestsError } = useCollectionDocs('croTests', 'startDate');
+  const { docs: emailsRaw, error: emailsError } = useEmailsCollection();
+  const { docs: paidTestsRaw, error: paidTestsError } = useCollectionDocs('paidTests', 'startDate');
+  const { docs: croTestsRaw, error: croTestsError } = useCollectionDocs('croTests', 'startDate');
   const { docs: promoTemplates, error: promoTemplatesError } = useCollectionDocs('promoTemplates', 'name');
+
+  // Items pending an undoable delete are filtered out right here, once, so every downstream
+  // consumer (boards, Overview, Stats, My Work, search, exports) sees them gone immediately —
+  // without each of those needing its own awareness of pendingDeleteKeys.
+  const emails = useMemo(() => (!emailsRaw ? emailsRaw : emailsRaw.filter((em) => !pendingDeleteKeys.has(`email:${em.id}`))), [emailsRaw, pendingDeleteKeys]);
+  const paidTests = useMemo(() => (!paidTestsRaw ? paidTestsRaw : paidTestsRaw.filter((t) => !pendingDeleteKeys.has(`paidTest:${t.id}`))), [paidTestsRaw, pendingDeleteKeys]);
+  const croTests = useMemo(() => (!croTestsRaw ? croTestsRaw : croTestsRaw.filter((t) => !pendingDeleteKeys.has(`croTest:${t.id}`))), [croTestsRaw, pendingDeleteKeys]);
 
   // Seed the store once, guarded by a transaction so concurrent first-openers don't double-seed.
   useEffect(() => {
@@ -1164,8 +1347,10 @@ function PromotionPlanner({ user }) {
 
   const promotions = useMemo(() => {
     if (!promoDocs) return null;
-    return promoDocs.map((p) => ({ ...p, tasks: tasksByPromo[p.id] || [] }));
-  }, [promoDocs, tasksByPromo]);
+    return promoDocs
+      .filter((p) => !pendingDeleteKeys.has(`promo:${p.id}`))
+      .map((p) => ({ ...p, tasks: (tasksByPromo[p.id] || []).filter((t) => !pendingDeleteKeys.has(`task:${t.id}`)) }));
+  }, [promoDocs, tasksByPromo, pendingDeleteKeys]);
 
   const timelinePromotions = useMemo(() => (promotions || []).filter((p) => !p.archived), [promotions]);
 
@@ -1489,10 +1674,10 @@ function PromotionPlanner({ user }) {
   async function addTask(promoId, promoName, data) {
     setBusy(true);
     try {
-      await addDoc(collection(fdb, 'promotions', promoId, 'tasks'), {
+      const ref = await addDoc(collection(fdb, 'promotions', promoId, 'tasks'), {
         ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
       });
-      await logActivity({ action: 'task_created', promoId, promoName, taskTitle: data.title });
+      await logActivity({ action: 'task_created', promoId, promoName, taskId: ref.id, taskTitle: data.title });
     } finally { setBusy(false); }
   }
 
@@ -1503,7 +1688,7 @@ function PromotionPlanner({ user }) {
       // (createdBy/createdAt) don't carry them, and Firestore rejects `undefined` values —
       // updateDoc only touches the fields we actually pass, so that's never a problem here.
       await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'task_updated', promoId, promoName, taskTitle: data.title });
+      await logActivity({ action: 'task_updated', promoId, promoName, taskId, taskTitle: data.title });
     } finally { setBusy(false); }
   }
 
@@ -1511,14 +1696,14 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       await deleteDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId));
-      await logActivity({ action: 'task_deleted', promoId, promoName, taskTitle });
+      await logActivity({ action: 'task_deleted', promoId, promoName, taskId, taskTitle });
     } finally { setBusy(false); }
   }
 
   async function moveTask(promoId, promoName, taskId, taskTitle, patch, fromStatus) {
     try {
       await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...patch, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'task_moved', promoId, promoName, taskTitle, detail: `${fromStatus} → ${patch.status}` });
+      await logActivity({ action: 'task_moved', promoId, promoName, taskId, taskTitle, detail: `${fromStatus} → ${patch.status}` });
     } catch (err) { pushToast('Could not move this task: ' + err.message); }
   }
 
@@ -1564,10 +1749,10 @@ function PromotionPlanner({ user }) {
   async function addEmail(data) {
     setBusy(true);
     try {
-      await addDoc(collection(fdb, 'emails'), {
+      const ref = await addDoc(collection(fdb, 'emails'), {
         ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
       });
-      await logActivity({ action: 'email_created', taskTitle: data.subject });
+      await logActivity({ action: 'email_created', emailId: ref.id, taskTitle: data.subject });
     } finally { setBusy(false); }
   }
 
@@ -1575,7 +1760,7 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       await updateDoc(doc(fdb, 'emails', emailId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'email_updated', taskTitle: data.subject });
+      await logActivity({ action: 'email_updated', emailId, taskTitle: data.subject });
     } finally { setBusy(false); }
   }
 
@@ -1583,21 +1768,21 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       await deleteDoc(doc(fdb, 'emails', emailId));
-      await logActivity({ action: 'email_deleted', taskTitle: subject });
+      await logActivity({ action: 'email_deleted', emailId, taskTitle: subject });
     } finally { setBusy(false); }
   }
 
   async function moveEmail(emailId, subject, status, fromStatus) {
     try {
       await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'email_moved', taskTitle: subject, detail: `${fromStatus} → ${status}` });
+      await logActivity({ action: 'email_moved', emailId, taskTitle: subject, detail: `${fromStatus} → ${status}` });
     } catch (err) { pushToast('Could not move this email: ' + err.message); }
   }
 
   async function rescheduleEmail(emailId, subject, newDate, oldDate) {
     try {
       await updateDoc(doc(fdb, 'emails', emailId), { sendDate: newDate, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'email_rescheduled', taskTitle: subject, detail: `${formatDate(oldDate)} → ${formatDate(newDate)}` });
+      await logActivity({ action: 'email_rescheduled', emailId, taskTitle: subject, detail: `${formatDate(oldDate)} → ${formatDate(newDate)}` });
     } catch (err) { pushToast('Could not reschedule this email: ' + err.message); }
   }
 
@@ -1636,15 +1821,10 @@ function PromotionPlanner({ user }) {
     setEmailForm(null);
   }
 
-  async function deleteEmailClick() {
+  function deleteEmailClick() {
     if (!emailForm.id) return;
-    if (!window.confirm(`Delete "${emailForm.subject}"? This can't be undone.`)) return;
-    try {
-      await removeEmail(emailForm.id, emailForm.subject);
-    } catch (err) {
-      pushToast('Could not delete this email: ' + err.message);
-      return;
-    }
+    const { id, subject } = emailForm;
+    deleteWithUndo(`email:${id}`, subject, () => removeEmail(id, subject));
     setEmailModal(false);
     setEmailForm(null);
   }
@@ -1671,10 +1851,10 @@ function PromotionPlanner({ user }) {
   async function addTestItem(collectionName, label, data) {
     setBusy(true);
     try {
-      await addDoc(collection(fdb, collectionName), {
+      const ref = await addDoc(collection(fdb, collectionName), {
         ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
       });
-      await logActivity({ action: 'test_created', taskTitle: data.name, promoName: label });
+      await logActivity({ action: 'test_created', testId: ref.id, taskTitle: data.name, promoName: label });
     } finally { setBusy(false); }
   }
 
@@ -1682,7 +1862,7 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       await updateDoc(doc(fdb, collectionName, id), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'test_updated', taskTitle: data.name, promoName: label });
+      await logActivity({ action: 'test_updated', testId: id, taskTitle: data.name, promoName: label });
     } finally { setBusy(false); }
   }
 
@@ -1690,14 +1870,14 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       await deleteDoc(doc(fdb, collectionName, id));
-      await logActivity({ action: 'test_deleted', taskTitle: name, promoName: label });
+      await logActivity({ action: 'test_deleted', testId: id, taskTitle: name, promoName: label });
     } finally { setBusy(false); }
   }
 
   async function moveTestItem(collectionName, label, id, name, status, fromStatus) {
     try {
       await updateDoc(doc(fdb, collectionName, id), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'test_moved', taskTitle: name, promoName: label, detail: `${fromStatus} → ${status}` });
+      await logActivity({ action: 'test_moved', testId: id, taskTitle: name, promoName: label, detail: `${fromStatus} → ${status}` });
     } catch (err) { pushToast('Could not move this test: ' + err.message); }
   }
 
@@ -1748,16 +1928,12 @@ function PromotionPlanner({ user }) {
     setTestForm(null);
   }
 
-  async function deleteTestClick() {
+  function deleteTestClick() {
     if (!testForm.id) return;
     const config = findTrackerConfig(testForm.__collection);
-    if (!window.confirm(`Delete "${testForm.name}"? This can't be undone.`)) return;
-    try {
-      await removeTestItem(config.collection, config.label, testForm.id, testForm.name);
-    } catch (err) {
-      pushToast('Could not delete this: ' + err.message);
-      return;
-    }
+    const { id, name } = testForm;
+    const keyPrefix = config.collection === 'paidTests' ? 'paidTest' : 'croTest';
+    deleteWithUndo(`${keyPrefix}:${id}`, name, () => removeTestItem(config.collection, config.label, id, name));
     setTestModal(false);
     setTestForm(null);
   }
@@ -1816,15 +1992,12 @@ function PromotionPlanner({ user }) {
     setTaskForm(null);
   }
 
-  async function deleteTaskClick() {
+  function deleteTaskClick() {
     if (!activePromo || !taskForm.id) return;
-    if (!window.confirm(`Delete "${taskForm.title}"? This can't be undone.`)) return;
-    try {
-      await removeTask(activePromo.id, activePromo.name, taskForm.id, taskForm.title);
-    } catch (err) {
-      pushToast('Could not delete this task: ' + err.message);
-      return;
-    }
+    const { id, title } = taskForm;
+    const promoId = activePromo.id;
+    const promoName = activePromo.name;
+    deleteWithUndo(`task:${id}`, title, () => removeTask(promoId, promoName, id, title));
     setTaskModal(false);
     setTaskForm(null);
   }
@@ -1944,16 +2117,14 @@ function PromotionPlanner({ user }) {
     setSelectedTemplateId('');
   }
 
-  async function deletePromoClick() {
+  function deletePromoClick() {
     if (!promoForm.id) return;
-    if (!window.confirm(`Delete "${promoForm.name}" and all its tasks? This can't be undone, and it removes the promotion for everyone.`)) return;
-    try {
-      await deletePromotion(promoForm.id, promoForm.name);
-    } catch (err) {
-      pushToast('Could not delete this promotion: ' + err.message);
-      return;
-    }
-    setActivePromoId(null);
+    const { id, name } = promoForm;
+    // activePromoId is deliberately left as-is: if the deleted promotion was active and Undo
+    // is clicked within the window, the view just keeps showing it, seamlessly. If Undo isn't
+    // clicked, the existing activePromo fallback (promotions.find(...) || promotions[0]) picks
+    // a visible promotion on its own once this one actually disappears from the list.
+    deleteWithUndo(`promo:${id}`, name, () => deletePromotion(id, name));
     setPromoModal(false);
     setPromoForm(null);
   }
@@ -3069,21 +3240,17 @@ function PromotionPlanner({ user }) {
       activityEntries && activityEntries.length > 0 && e(
         'div',
         { style: { display: 'flex', flexDirection: 'column' } },
-        activityEntries.map((entry) => e(
-          'div',
-          { key: entry.id, style: { padding: '0.625rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.875rem', color: 'var(--text-primary)' } },
-          e('span', { style: { fontWeight: 600 } }, entry.by || 'Someone'),
-          ' ',
-          ACTION_LABELS[entry.action] || entry.action,
-          ' ',
-          (entry.taskTitle || entry.promoName) && e('span', { style: { fontStyle: 'italic' } }, `"${entry.taskTitle || entry.promoName}"`),
-          entry.taskTitle && entry.promoName && e('span', { style: { color: 'var(--text-secondary)' } }, ` in ${entry.promoName}`),
-          entry.detail && e('span', { style: { color: 'var(--text-secondary)' } }, ` (${entry.detail})`),
-          e('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.125rem' } }, formatDateTime(entry.at))
-        ))
+        activityEntries.map((entry) => e(ActivityEntryRow, { key: entry.id, entry }))
       )
     );
   }
+
+  // Called unconditionally every render (Rules of Hooks) regardless of which modal, if any, is
+  // open — each only actually subscribes once its own form has a real id (see useItemHistory).
+  const taskHistory = useItemHistory('taskId', taskForm ? taskForm.id : null);
+  const promoHistory = useItemHistory('promoId', promoForm ? promoForm.id : null);
+  const emailHistory = useItemHistory('emailId', emailForm ? emailForm.id : null);
+  const testHistory = useItemHistory('testId', testForm ? testForm.id : null);
 
   let taskModalEl = null;
   if (taskModal && taskForm) {
@@ -3118,7 +3285,8 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
       ),
-      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
+      taskForm.id && e(HistorySection, { entries: taskHistory.entries, error: taskHistory.error }),
+      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
     );
   }
 
@@ -3159,7 +3327,8 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
       ),
-      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
+      promoForm.id && e(HistorySection, { entries: promoHistory.entries, error: promoHistory.error }),
+      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
     );
   }
 
@@ -3205,7 +3374,8 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
       ),
-      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
+      emailForm.id && e(HistorySection, { entries: emailHistory.entries, error: emailHistory.error }),
+      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
     );
   }
 
@@ -3234,7 +3404,8 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: saveTest, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
       ),
-      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
+      testForm.id && e(HistorySection, { entries: testHistory.entries, error: testHistory.error }),
+      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
     );
   }
 
