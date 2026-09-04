@@ -1240,10 +1240,12 @@ function PromotionPlanner({ user }) {
     )
   );
 
+  // Sub-tabs read as a lightweight underline strip, distinct in kind (not just size) from the
+  // boxed section pills above them: no fill, no border box, just an accent underline when active.
   function tabStyle(active) {
     return active
-      ? { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
-      : { padding: '0.375rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 500, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
+      ? { padding: '0.3125rem 0.125rem', background: 'none', fontSize: '0.875rem', fontWeight: 600, color: PURPLE_TEXT, border: 'none', borderBottom: `2px solid ${PURPLE}`, cursor: 'pointer' }
+      : { padding: '0.3125rem 0.125rem', background: 'none', fontSize: '0.875rem', fontWeight: 500, color: 'var(--text-secondary)', border: 'none', borderBottom: '2px solid transparent', cursor: 'pointer' };
   }
 
   function sectionTabStyle(active) {
@@ -1267,28 +1269,28 @@ function PromotionPlanner({ user }) {
   if (section === 'promotions') {
     subTabs = e(
       'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setPromoView('board'), style: tabStyle(promoView === 'board') }, 'Board'),
       e('button', { onClick: () => setPromoView('timeline'), style: tabStyle(promoView === 'timeline') }, 'Timeline')
     );
   } else if (section === 'acquisition') {
     subTabs = e(
       'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setAcqView('board'), style: tabStyle(acqView === 'board') }, 'Board'),
       e('button', { onClick: () => setAcqView('timeline'), style: tabStyle(acqView === 'timeline') }, 'Timeline')
     );
   } else if (section === 'retention') {
     subTabs = e(
       'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setEmailView('board'), style: tabStyle(emailView === 'board') }, 'Board'),
       e('button', { onClick: () => setEmailView('calendar'), style: tabStyle(emailView === 'calendar') }, 'Calendar')
     );
   } else if (section === 'website') {
     subTabs = e(
       'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: subTabPadding } },
+      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
       e('button', { onClick: () => setWebView('board'), style: tabStyle(webView === 'board') }, 'Board'),
       e('button', { onClick: () => setWebView('timeline'), style: tabStyle(webView === 'timeline') }, 'Timeline')
     );
