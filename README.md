@@ -58,7 +58,11 @@ also carries its own **comment thread**, for back-and-forth that would
 otherwise overwrite the single free-text notes field — type `@Name` (or
 just `@FirstName`) to mention a teammate; it's highlighted in the thread and
 the comment itself is visually called out for them, though nothing is
-pushed to them outside the app yet. Deleting a promotion, task, email, or
+pushed to them outside the app yet. Each edit screen also has an
+**Attachments** section — "+ Add file" to upload a document or image
+(10MB cap), shown as a thumbnail for images or a filename link otherwise,
+with size/uploader/date; only the person who uploaded a file can delete it.
+Deleting a promotion, task, email, or
 test shows an **Undo** on its toast for a few seconds — the record isn't
 actually removed from Firestore until that window passes, so Undo is exact,
 not a re-creation. Each of those edit screens also has a collapsed
@@ -98,11 +102,11 @@ tab while you read it.
 ## Live board
 
 `index.html` is a single self-contained page (React, loaded from cdnjs, no
-build step) backed by Firebase Firestore and Firebase Authentication, which
-is what gives it real shared, multi-user editing restricted to your team:
-everyone signs in with Google, and only people you've explicitly approved
-can see or edit the board — no Claude account or shared organization
-required.
+build step) backed by Firebase Firestore, Firebase Authentication, and
+Firebase Cloud Storage (for attachments), which is what gives it real
+shared, multi-user editing restricted to your team: everyone signs in with
+Google, and only people you've explicitly approved can see or edit the
+board — no Claude account or shared organization required.
 
 ### Hosting it
 
@@ -148,7 +152,7 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email));
     }
 
-    function isCommentAuthor() {
+    function isAuthor() {
       return isAllowed() && request.auth.token.email == resource.data.byEmail;
     }
 
@@ -159,13 +163,23 @@ service cloud.firestore {
         match /comments/{commentId} {
           allow read, create: if isAllowed();
           allow update: if false;
-          allow delete: if isCommentAuthor();
+          allow delete: if isAuthor();
+        }
+        match /attachments/{attachmentId} {
+          allow read, create: if isAllowed();
+          allow update: if false;
+          allow delete: if isAuthor();
         }
       }
       match /comments/{commentId} {
         allow read, create: if isAllowed();
         allow update: if false;
-        allow delete: if isCommentAuthor();
+        allow delete: if isAuthor();
+      }
+      match /attachments/{attachmentId} {
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isAuthor();
       }
     }
 
@@ -174,7 +188,12 @@ service cloud.firestore {
       match /comments/{commentId} {
         allow read, create: if isAllowed();
         allow update: if false;
-        allow delete: if isCommentAuthor();
+        allow delete: if isAuthor();
+      }
+      match /attachments/{attachmentId} {
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isAuthor();
       }
     }
 
@@ -183,7 +202,12 @@ service cloud.firestore {
       match /comments/{commentId} {
         allow read, create: if isAllowed();
         allow update: if false;
-        allow delete: if isCommentAuthor();
+        allow delete: if isAuthor();
+      }
+      match /attachments/{attachmentId} {
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isAuthor();
       }
     }
 
@@ -192,7 +216,12 @@ service cloud.firestore {
       match /comments/{commentId} {
         allow read, create: if isAllowed();
         allow update: if false;
-        allow delete: if isCommentAuthor();
+        allow delete: if isAuthor();
+      }
+      match /attachments/{attachmentId} {
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isAuthor();
       }
     }
 
@@ -224,6 +253,45 @@ service cloud.firestore {
 Anyone not signed in, or signed in but not on the allowlist, is bounced to a
 sign-in or "ask an admin" screen before ever reaching the board — enforced
 by these rules server-side, not just hidden in the UI.
+
+**4. Enable Cloud Storage and set its rules.** Attachments need Firebase
+Storage, which — unlike Firestore — isn't on by default. In the
+[Firebase console](https://console.firebase.google.com) → **Storage** →
+**Get started**, accept the default location/production-mode prompts (the
+rules below replace whatever it scaffolds). Then under **Storage → Rules**,
+use:
+
+```
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAllowed() {
+      return request.auth != null &&
+        request.auth.token.email != null &&
+        firestore.exists(/databases/(default)/documents/allowlist/$(request.auth.token.email));
+    }
+
+    match /attachments/{allPaths=**} {
+      allow read: if isAllowed();
+      allow write: if isAllowed() && request.resource.size < 10 * 1024 * 1024;
+      allow delete: if isAllowed();
+    }
+  }
+}
+```
+
+This mirrors the same allowlist gate as the Firestore rules above (Storage
+rules can reach into Firestore with `firestore.exists()`/`firestore.get()`
+to reuse it, so access stays governed from the one `allowlist` collection)
+and caps uploads at 10MB server-side, matching the app's own client-side
+check. Storage doesn't support per-document ownership checks the way
+Firestore's `resource.data.byEmail` does, so file deletion is gated the same
+way as everything else here — anyone on the allowlist can technically call
+delete on a Storage object directly — while the app's own UI only ever
+offers the Delete button to the uploader; the matching Firestore rule above
+(`allow delete: if isAuthor()`) still stops anyone but the uploader from
+removing the attachment's metadata doc, which is what the app actually
+reads.
 
 ### Data model
 
@@ -292,6 +360,14 @@ by these rules server-side, not just hidden in the UI.
   the author (matched on `byEmail`) can delete their own comment. Not shown
   in the Activity log, which tracks structural changes rather than
   conversation.
+- `.../attachments/{attachmentId}` — file/image metadata under any of the
+  same five item types as comments above. Each doc is `name`, `size`,
+  `contentType`, `storagePath`, `url` (the Storage download URL), `by`,
+  `byEmail`, `at`; the actual bytes live in Firebase Storage at
+  `storagePath` (mirroring the Firestore path, under a top-level
+  `attachments/` prefix), capped at 10MB. Anyone on the allowlist can read
+  and upload; only the uploader (matched on `byEmail`) can delete their own
+  file. Also not shown in the Activity log, for the same reason as comments.
 - `activity/{entryId}` — an append-only change log: one document per create,
   edit, move, or delete anywhere on the board (`action`, `by`, `at`,
   `promoName`, `taskTitle`, `detail`, plus `promoId`/`taskId`/`emailId`/
