@@ -2356,7 +2356,12 @@ function PromotionPlanner({ user }) {
     if (!emailForm) return;
     let nextSendDate = '';
     if (emailForm.sendDate) {
-      const d = new Date(emailForm.sendDate);
+      // Built from y/m/d parts, not new Date(emailForm.sendDate) — same reasoning as the
+      // calendar month-grid helpers: parsing a date-only string with the Date constructor reads
+      // it as UTC midnight, which a negative-UTC-offset viewer's local .getDate() can then read
+      // back as the previous day, shifting the computed date by one.
+      const [y, m, day] = emailForm.sendDate.split('-').map(Number);
+      const d = new Date(y, m - 1, day);
       if (unit === 'week') d.setDate(d.getDate() + 7);
       else d.setMonth(d.getMonth() + 1);
       nextSendDate = toDateKey(d);
@@ -4234,7 +4239,7 @@ function PromotionPlanner({ user }) {
         emailsSection,
         testTrackerSection,
         activitySection,
-        section === 'admin' && e(AdminSection, { currentUserEmail: user.email, users, pushToast, isMobile })
+        section === 'admin' && isAdmin && e(AdminSection, { currentUserEmail: user.email, users, pushToast, isMobile })
       )
     ),
     taskModalEl,
