@@ -1262,7 +1262,7 @@ function PromotionPlanner({ user }) {
     e('button', { onClick: () => setSection('activity'), style: sectionTabStyle(section === 'activity') }, 'Activity')
   );
 
-  const subTabPadding = isMobile ? '0.75rem 1rem 0' : '0.75rem 2rem 0';
+  const subTabPadding = isMobile ? '0.75rem 1rem 1.25rem' : '0.75rem 2rem 1.25rem';
   let subTabs = null;
   if (section === 'promotions') {
     subTabs = e(
