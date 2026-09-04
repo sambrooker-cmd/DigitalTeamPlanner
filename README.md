@@ -8,7 +8,8 @@ top-level tab:
 
 - **My Work** — everything assigned to the signed-in viewer (promotion
   tasks, emails, paid media tests, CRO/UX tests), soonest due date
-  first, overdue items in red.
+  first, overdue items in red. Anything due today is pulled into its own
+  "Due today" group at the top.
 - **Overview** — a unified, read-only timeline rolling up every
   promotion, email, paid media test, and CRO/UX test into one
   chronological view, each row tagged with a team-colored badge. Click a
@@ -35,6 +36,12 @@ top-level tab:
   - **Website** — CRO/UX Tests: a status board and a timeline.
 - **Activity** — a live change log across everything above.
 
+The header also has a **search box** that reaches everything at once —
+promotions, individual tasks, emails, and both test trackers — regardless
+of which tab you're on; picking a result jumps straight there. A **theme
+button** next to it cycles System → Light → Dark and remembers the choice
+per-browser (dark mode otherwise just follows your OS setting on its own).
+
 Each timeline (Promotions, Paid Media, CRO/UX) uses the same visual
 language: a light bar for the prep/build period, a solid bar for when
 it's actually live, and separate launch/end markers — so "still being
@@ -49,6 +56,11 @@ otherwise overwrite the single free-text notes field. Promotions, Emails,
 Paid Media, and CRO/UX each have an **Export CSV** button (on the
 promotion's board, and by the "+ New…" button on the other three) for
 pulling the current data into a deck or report.
+
+When something goes wrong (a save fails, a required field is missing), it
+shows up as a small dismissible notification in the bottom corner rather
+than a blocking browser alert — same information, just doesn't freeze the
+tab while you read it.
 
 ## Live board
 

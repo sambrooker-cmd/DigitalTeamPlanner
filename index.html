@@ -4,6 +4,17 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Digital Team Planner</title>
+<script>
+  // Applied synchronously, before the CSS below ever paints, so a saved "light" or "dark"
+  // choice never flashes the OS-default theme first. No preference stored = follow the OS
+  // (the CSS handles that case on its own via prefers-color-scheme).
+  (function () {
+    try {
+      var t = localStorage.getItem('theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (err) {}
+  })();
+</script>
 <link rel="icon" href="https://www.ambassadorcruiseline.com/favicon.ico" />
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&display=swap');
@@ -630,6 +641,28 @@ function useOnlineStatus() {
   return online;
 }
 
+// 'light' | 'dark' | 'system' — persisted per-browser in localStorage (this is a personal
+// display preference, not shared team data, so it doesn't belong in Firestore). 'system'
+// means no stored choice: the CSS's prefers-color-scheme media query decides.
+function useTheme() {
+  const [theme, setThemeState] = useState(() => {
+    try {
+      const stored = localStorage.getItem('theme');
+      return stored === 'light' || stored === 'dark' ? stored : 'system';
+    } catch (err) { return 'system'; }
+  });
+  function setTheme(next) {
+    setThemeState(next);
+    try {
+      if (next === 'system') localStorage.removeItem('theme');
+      else localStorage.setItem('theme', next);
+    } catch (err) {}
+    if (next === 'system') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', next);
+  }
+  return [theme, setTheme];
+}
+
 const MOBILE_QUERY = '(max-width: 720px)';
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.matchMedia(MOBILE_QUERY).matches : false));
@@ -797,6 +830,50 @@ function useTasksByPromo(promoIds) {
   return { tasksByPromo, errors };
 }
 
+// A small non-blocking notification stack, replacing window.alert() for the error/validation
+// messages sprinkled through the save/delete/move handlers — those still need to interrupt and
+// explain what went wrong, but a native alert() blocks the whole tab and looks like the browser
+// yelling at you, not the app talking to you. Auto-dismisses; also closeable by hand.
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  function pushToast(message, tone) {
+    const id = genId();
+    setToasts((prev) => [...prev, { id, message, tone: tone || 'error' }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 6000);
+  }
+  function dismissToast(id) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }
+  return { toasts, pushToast, dismissToast };
+}
+
+function ToastStack({ toasts, onDismiss }) {
+  if (!toasts.length) return null;
+  return e(
+    'div',
+    { style: { position: 'fixed', bottom: '1rem', right: '1rem', left: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.5rem', zIndex: 100, pointerEvents: 'none' } },
+    toasts.map((t) => e(
+      'div',
+      {
+        key: t.id,
+        role: 'alert',
+        style: {
+          pointerEvents: 'auto', maxWidth: '22rem', width: '100%', background: 'var(--surface)',
+          border: '1px solid var(--border)', borderLeftWidth: '4px', borderLeftColor: t.tone === 'error' ? 'var(--danger)' : PURPLE,
+          borderRadius: '0.5rem', padding: '0.75rem 0.875rem', boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.75rem', fontSize: '0.8125rem', color: 'var(--text-primary)',
+        },
+      },
+      e('span', { style: { flex: 1, lineHeight: 1.4 } }, t.message),
+      e('button', {
+        onClick: () => onDismiss(t.id),
+        'aria-label': 'Dismiss',
+        style: { background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.125rem', lineHeight: 1, padding: 0, flexShrink: 0 },
+      }, '×')
+    ))
+  );
+}
+
 function useActivityLog(active) {
   const [entries, setEntries] = useState(null); // null = loading
   const [error, setError] = useState(null);
@@ -838,7 +915,7 @@ function useComments(pathSegments) {
 // Reusable comment thread, dropped into any modal for an already-saved item (pathSegments
 // points at that item's own 'comments' subcollection). Anyone on the allowlist can read every
 // comment; only the author can delete their own.
-function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
+function CommentsThread({ pathSegments, currentUserEmail, currentUserName, pushToast }) {
   const { comments, error } = useComments(pathSegments);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -858,7 +935,7 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
       await addDoc(collection(fdb, ...pathSegments), { text: text.trim(), by: currentUserName, byEmail: currentUserEmail, at: serverTimestamp() });
       setText('');
     } catch (err) {
-      window.alert('Could not post comment: ' + err.message);
+      pushToast('Could not post comment: ' + err.message);
     } finally {
       setBusy(false);
     }
@@ -869,7 +946,7 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
     try {
       await deleteDoc(doc(fdb, ...pathSegments, id));
     } catch (err) {
-      window.alert('Could not delete comment: ' + err.message);
+      pushToast('Could not delete comment: ' + err.message);
     }
   }
 
@@ -921,10 +998,12 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
 
 function PromotionPlanner({ user }) {
   const online = useOnlineStatus();
+  const [theme, setTheme] = useTheme();
   const isMobile = useIsMobile();
   const pagePadding = isMobile ? '1rem' : '1.5rem 2rem';
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
+  const { toasts, pushToast, dismissToast } = useToasts();
   const { users, error: usersError } = useUsersDirectory();
 
   // Registers/refreshes this viewer in the team directory (used to populate assignee
@@ -1104,6 +1183,63 @@ function PromotionPlanner({ user }) {
     };
   }, [timelinePromotions, promotions, paidTests, croTests, emails]);
 
+  // Flat, cross-type search index for the header's global search box — the same onOpen
+  // navigation pattern rollupItems/myWorkItems already use, just including individual tasks too
+  // (Overview only surfaces whole promotions, not the tasks inside them).
+  const globalSearchIndex = useMemo(() => {
+    const items = [];
+    (promotions || []).forEach((p) => {
+      items.push({
+        id: `gs-promo-${p.id}`, kind: ROLLUP_KINDS.promotion, name: p.name, context: p.archived ? 'Promotion (archived)' : 'Promotion',
+        // showArchived only affects the tab strip's own filter, not which promotion is
+        // active — without this an archived result would open correctly but its tab
+        // wouldn't be visible/highlighted above it.
+        onOpen: () => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); if (p.archived) setShowArchived(true); },
+      });
+      (p.tasks || []).forEach((t) => {
+        const team = TEAMS.find((tm) => tm.id === t.team);
+        items.push({
+          id: `gs-task-${t.id}`, kind: team ? { label: team.label, color: team.color, bg: `rgba(${team.rgb}, 0.16)` } : ROLLUP_KINDS.promotion, name: t.title, context: p.name,
+          onOpen: () => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); if (p.archived) setShowArchived(true); openEditTask(t); },
+        });
+      });
+    });
+    (emails || []).forEach((em) => items.push({
+      id: `gs-email-${em.id}`, kind: ROLLUP_KINDS.email, name: em.subject, context: 'Email',
+      onOpen: () => { setSection('boards'); setActiveBoard('retention'); setEmailView('board'); openEditEmail(em); },
+    }));
+    (paidTests || []).forEach((t) => items.push({
+      id: `gs-paid-${t.id}`, kind: ROLLUP_KINDS.paid, name: t.name, context: 'Paid Media Test',
+      onOpen: () => { setSection('boards'); setActiveBoard('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
+    }));
+    (croTests || []).forEach((t) => items.push({
+      id: `gs-cro-${t.id}`, kind: ROLLUP_KINDS.cro, name: t.name, context: 'CRO/UX Test',
+      onOpen: () => { setSection('boards'); setActiveBoard('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
+    }));
+    return items;
+  }, [promotions, emails, paidTests, croTests]);
+
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const globalSearchRef = useRef(null);
+  useEffect(() => {
+    function onDocMouseDown(ev) {
+      if (globalSearchRef.current && !globalSearchRef.current.contains(ev.target)) setGlobalSearchOpen(false);
+    }
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, []);
+  const globalSearchResults = useMemo(() => {
+    const q = globalSearchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return globalSearchIndex.filter((it) => (it.name + ' ' + it.context).toLowerCase().includes(q)).slice(0, 8);
+  }, [globalSearchQuery, globalSearchIndex]);
+  function selectGlobalSearchResult(it) {
+    it.onOpen();
+    setGlobalSearchQuery('');
+    setGlobalSearchOpen(false);
+  }
+
   const [activePromoId, setActivePromoId] = useState(null);
   useEffect(() => {
     if (promotions && promotions.length && !activePromoId) {
@@ -1245,7 +1381,7 @@ function PromotionPlanner({ user }) {
     try {
       await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...patch, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'task_moved', promoId, promoName, taskTitle, detail: `${fromStatus} → ${patch.status}` });
-    } catch (err) { window.alert('Could not move this task: ' + err.message); }
+    } catch (err) { pushToast('Could not move this task: ' + err.message); }
   }
 
   async function createPromotion(data) {
@@ -1317,7 +1453,7 @@ function PromotionPlanner({ user }) {
     try {
       await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'email_moved', taskTitle: subject, detail: `${fromStatus} → ${status}` });
-    } catch (err) { window.alert('Could not move this email: ' + err.message); }
+    } catch (err) { pushToast('Could not move this email: ' + err.message); }
   }
 
   function openNewEmail(status, sendDate, relatedPromoId) {
@@ -1339,7 +1475,7 @@ function PromotionPlanner({ user }) {
 
   async function saveEmail() {
     if (!emailForm.subject.trim() || !emailForm.sendDate) {
-      window.alert('Subject and send date are required.');
+      pushToast('Subject and send date are required.');
       return;
     }
     const { id, subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes } = emailForm;
@@ -1348,7 +1484,7 @@ function PromotionPlanner({ user }) {
       if (id) await saveExistingEmail(id, data);
       else await addEmail(data);
     } catch (err) {
-      window.alert('Could not save this email: ' + err.message);
+      pushToast('Could not save this email: ' + err.message);
       return;
     }
     setEmailModal(false);
@@ -1361,7 +1497,7 @@ function PromotionPlanner({ user }) {
     try {
       await removeEmail(emailForm.id, emailForm.subject);
     } catch (err) {
-      window.alert('Could not delete this email: ' + err.message);
+      pushToast('Could not delete this email: ' + err.message);
       return;
     }
     setEmailModal(false);
@@ -1410,7 +1546,7 @@ function PromotionPlanner({ user }) {
     try {
       await updateDoc(doc(fdb, collectionName, id), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'test_moved', taskTitle: name, promoName: label, detail: `${fromStatus} → ${status}` });
-    } catch (err) { window.alert('Could not move this test: ' + err.message); }
+    } catch (err) { pushToast('Could not move this test: ' + err.message); }
   }
 
   function openNewTest(config, status, overrides) {
@@ -1444,7 +1580,7 @@ function PromotionPlanner({ user }) {
   async function saveTest() {
     const config = findTrackerConfig(testForm.__collection);
     if (!testForm.name || !testForm.name.trim() || !testForm.startDate) {
-      window.alert('Test name and start date are required.');
+      pushToast('Test name and start date are required.');
       return;
     }
     const data = { status: testForm.status };
@@ -1453,7 +1589,7 @@ function PromotionPlanner({ user }) {
       if (testForm.id) await saveExistingTestItem(config.collection, config.label, testForm.id, data);
       else await addTestItem(config.collection, config.label, data);
     } catch (err) {
-      window.alert('Could not save this: ' + err.message);
+      pushToast('Could not save this: ' + err.message);
       return;
     }
     setTestModal(false);
@@ -1467,7 +1603,7 @@ function PromotionPlanner({ user }) {
     try {
       await removeTestItem(config.collection, config.label, testForm.id, testForm.name);
     } catch (err) {
-      window.alert('Could not delete this: ' + err.message);
+      pushToast('Could not delete this: ' + err.message);
       return;
     }
     setTestModal(false);
@@ -1510,7 +1646,7 @@ function PromotionPlanner({ user }) {
   async function saveTask() {
     if (!activePromo) return;
     if (!taskForm.title.trim()) {
-      window.alert(taskForm.status === 'Reports' ? 'A result headline is required.' : 'A task title is required.');
+      pushToast(taskForm.status === 'Reports' ? 'A result headline is required.' : 'A task title is required.');
       return;
     }
     // Only the fields the form actually edits — never forward whatever else happens to be
@@ -1521,7 +1657,7 @@ function PromotionPlanner({ user }) {
       if (id) await saveExistingTask(activePromo.id, activePromo.name, id, data);
       else await addTask(activePromo.id, activePromo.name, data);
     } catch (err) {
-      window.alert('Could not save this task: ' + err.message);
+      pushToast('Could not save this task: ' + err.message);
       return;
     }
     setTaskModal(false);
@@ -1534,7 +1670,7 @@ function PromotionPlanner({ user }) {
     try {
       await removeTask(activePromo.id, activePromo.name, taskForm.id, taskForm.title);
     } catch (err) {
-      window.alert('Could not delete this task: ' + err.message);
+      pushToast('Could not delete this task: ' + err.message);
       return;
     }
     setTaskModal(false);
@@ -1571,11 +1707,11 @@ function PromotionPlanner({ user }) {
 
   async function savePromo() {
     if (!promoForm.name.trim() || !promoForm.launchDate) {
-      window.alert('Promotion name and launch date are required.');
+      pushToast('Promotion name and launch date are required.');
       return;
     }
     if (promoForm.endDate && promoForm.endDate < promoForm.launchDate) {
-      window.alert("End date can't be before the launch date.");
+      pushToast("End date can't be before the launch date.");
       return;
     }
     // Only the fields the form actually edits — never forward whatever else happens to be
@@ -1590,7 +1726,7 @@ function PromotionPlanner({ user }) {
         setActivePromoId(newId);
       }
     } catch (err) {
-      window.alert('Could not save this promotion: ' + err.message);
+      pushToast('Could not save this promotion: ' + err.message);
       return;
     }
     setPromoModal(false);
@@ -1603,7 +1739,7 @@ function PromotionPlanner({ user }) {
     try {
       await deletePromotion(promoForm.id, promoForm.name);
     } catch (err) {
-      window.alert('Could not delete this promotion: ' + err.message);
+      pushToast('Could not delete this promotion: ' + err.message);
       return;
     }
     setActivePromoId(null);
@@ -1623,7 +1759,7 @@ function PromotionPlanner({ user }) {
     try {
       await archivePromo(activePromo);
     } catch (err) {
-      window.alert('Could not archive this promotion: ' + err.message);
+      pushToast('Could not archive this promotion: ' + err.message);
     }
   }
 
@@ -1632,7 +1768,7 @@ function PromotionPlanner({ user }) {
     try {
       await archivePromo(promoForm);
     } catch (err) {
-      window.alert('Could not archive this promotion: ' + err.message);
+      pushToast('Could not archive this promotion: ' + err.message);
       return;
     }
     setPromoModal(false);
@@ -1704,6 +1840,42 @@ function PromotionPlanner({ user }) {
       'div',
       { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.75rem' } },
       e(
+        'div',
+        { ref: globalSearchRef, style: { position: 'relative', flex: isMobile ? '1 1 100%' : '0 1 14rem', minWidth: isMobile ? '100%' : '9rem', order: isMobile ? -1 : 0 } },
+        e('input', {
+          value: globalSearchQuery,
+          onChange: (ev) => { setGlobalSearchQuery(ev.target.value); setGlobalSearchOpen(true); },
+          onFocus: () => { if (globalSearchQuery.trim()) setGlobalSearchOpen(true); },
+          onKeyDown: (ev) => {
+            if (ev.key === 'Escape') { setGlobalSearchOpen(false); ev.currentTarget.blur(); }
+            else if (ev.key === 'Enter' && globalSearchResults.length > 0) selectGlobalSearchResult(globalSearchResults[0]);
+          },
+          placeholder: 'Search everything…',
+          style: { ...inputStyle, fontSize: '0.8125rem', padding: '0.4375rem 0.75rem' },
+        }),
+        globalSearchOpen && globalSearchQuery.trim() && e(
+          'div',
+          { style: { position: 'absolute', top: 'calc(100% + 0.25rem)', left: 0, right: 0, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.5rem', boxShadow: '0 8px 24px rgba(0,0,0,0.18)', maxHeight: '20rem', overflowY: 'auto', zIndex: 40 } },
+          globalSearchResults.length === 0
+            ? e('p', { style: { fontSize: '0.8125rem', color: 'var(--text-muted)', padding: '0.75rem', margin: 0 } }, 'No matches.')
+            : globalSearchResults.map((it) => e(
+                'div',
+                {
+                  key: it.id,
+                  onClick: () => selectGlobalSearchResult(it),
+                  style: { cursor: 'pointer', padding: '0.5rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border)' },
+                },
+                e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: it.kind.bg, color: it.kind.color, fontWeight: 600, flexShrink: 0 } }, it.kind.label),
+                e(
+                  'div',
+                  { style: { minWidth: 0, flex: 1 } },
+                  e('div', { style: { fontSize: '0.8125rem', color: PURPLE_DARK, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.name),
+                  e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.context)
+                )
+              ))
+        )
+      ),
+      e(
         'span',
         {
           style: {
@@ -1718,6 +1890,11 @@ function PromotionPlanner({ user }) {
       ),
       busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
       e('button', { onClick: openNewPromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New promotion'),
+      e('button', {
+        onClick: () => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'),
+        title: 'Click to change theme (follows your system by default)',
+        style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
+      }, theme === 'system' ? 'Theme: System' : theme === 'light' ? 'Theme: Light' : 'Theme: Dark'),
       e(
         'span',
         { style: { fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: isMobile ? 0 : '0.5rem', borderLeft: isMobile ? 'none' : '1px solid var(--border)' } },
@@ -2158,41 +2335,54 @@ function PromotionPlanner({ user }) {
 
   let myWorkSection = null;
   if (section === 'mywork') {
+    const todayKey = toDateKey(new Date());
+    const todayItems = myWorkItems.filter((it) => it.due === todayKey);
+    const laterItems = myWorkItems.filter((it) => it.due !== todayKey);
+
+    function renderMyWorkItem(it, highlight) {
+      const overdue = it.due && it.due !== todayKey && daysUntil(it.due) < 0;
+      return e(
+        'div',
+        {
+          key: it.id,
+          role: 'button',
+          tabIndex: 0,
+          onClick: it.onOpen,
+          onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); } },
+          style: { cursor: 'pointer', background: highlight ? 'var(--surface-tint)' : 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: `1px solid ${highlight ? PURPLE : 'var(--border)'}` },
+        },
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' } },
+          e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, it.title),
+          e('span', { style: { fontSize: '0.75rem', color: overdue ? 'var(--danger)' : 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' } }, it.due ? formatDate(it.due) : 'No date')
+        ),
+        e(
+          'div',
+          { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.375rem', marginTop: '0.375rem' } },
+          e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: it.badge.bg, color: it.badge.color, fontWeight: 600 } }, it.badge.label),
+          e('span', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)' } }, it.context),
+          e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, `· ${it.status}`)
+        )
+      );
+    }
+
     myWorkSection = e(
       'div',
       { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem', maxWidth: '48rem' } },
       e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, `Everything assigned to ${actorName} across Promotions, Emails, Paid Media, and CRO/UX — soonest first.`),
       myWorkItems.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Nothing assigned to you right now.'),
-      myWorkItems.length > 0 && e(
+      todayItems.length > 0 && e(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } },
-        myWorkItems.map((it) => {
-          const overdue = it.due && daysUntil(it.due) < 0;
-          return e(
-            'div',
-            {
-              key: it.id,
-              role: 'button',
-              tabIndex: 0,
-              onClick: it.onOpen,
-              onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); } },
-              style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)' },
-            },
-            e(
-              'div',
-              { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' } },
-              e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, it.title),
-              e('span', { style: { fontSize: '0.75rem', color: overdue ? 'var(--danger)' : 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' } }, it.due ? formatDate(it.due) : 'No date')
-            ),
-            e(
-              'div',
-              { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.375rem', marginTop: '0.375rem' } },
-              e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: it.badge.bg, color: it.badge.color, fontWeight: 600 } }, it.badge.label),
-              e('span', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)' } }, it.context),
-              e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, `· ${it.status}`)
-            )
-          );
-        })
+        { style: { marginBottom: '1.25rem' } },
+        e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, `Due today (${todayItems.length})`),
+        e('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } }, todayItems.map((it) => renderMyWorkItem(it, true)))
+      ),
+      laterItems.length > 0 && e(
+        'div',
+        null,
+        todayItems.length > 0 && e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, 'Everything else'),
+        e('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } }, laterItems.map((it) => renderMyWorkItem(it, false)))
       )
     );
   }
@@ -2642,7 +2832,7 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
       ),
-      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
+      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
     );
   }
 
@@ -2676,7 +2866,7 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
       ),
-      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
+      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
     );
   }
 
@@ -2722,7 +2912,7 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
       ),
-      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
+      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
     );
   }
 
@@ -2751,7 +2941,7 @@ function PromotionPlanner({ user }) {
         ) : e('span'),
         e('button', { onClick: saveTest, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
       ),
-      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
+      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, pushToast })
     );
   }
 
@@ -2790,7 +2980,8 @@ function PromotionPlanner({ user }) {
     taskModalEl,
     promoModalEl,
     emailModalEl,
-    testModalEl
+    testModalEl,
+    e(ToastStack, { toasts, onDismiss: dismissToast })
   );
 }
 
