@@ -1,10 +1,18 @@
 # Digital Team Planner
 
 A shared planning tool for the Acquisition, Retention, and Website teams.
-The top-level nav is five tabs — **My Work**, **Overview**, **Stats**,
-**Boards**, **Activity** — plus a sixth, **Admin**, visible only to
-Admins — with the four team channels living inside **Boards** behind
-their own switcher, rather than each getting its own top-level tab:
+The top-level nav is a **left sidebar** — **My Work**, **Overview**,
+**Stats**, **Boards**, **Activity**, plus a sixth item, **Admin**, visible
+only to Admins — collapsible to icons-only (click the arrow at the
+bottom of the sidebar) so it stays out of the way; the choice is
+remembered per-browser, like the theme setting, and starts collapsed on
+mobile. The four team channels live inside **Boards** behind their own
+switcher rather than each getting a sidebar item of their own, and that
+switcher shares a row with the section's own Board/Timeline (or
+Board/Calendar) toggle — the two are independent questions ("which
+channel," "which view"), not sequential steps, so they never stack as
+separate bars. The result is at most one row of context controls above
+any screen's actual content, on top of the sidebar:
 
 Everyone who signs in has one of three roles: **Admin** (also manages who
 has access and what role they hold), **Editor** (the default — can create,
@@ -40,7 +48,12 @@ roles are set.
   board/timeline(/calendar) sub-view independently:
   - **Promotions** — cross-team, since every promotion involves all three
     teams: a kanban board (briefing through launch to results reporting)
-    and a timeline.
+    and a timeline. Which promotion you're viewing is picked from a
+    dropdown next to its name (not a tab strip) — it isn't really
+    navigation, just choosing a record, so it's styled as part of the
+    board's own header rather than another nav bar; the dropdown itself
+    still shows every promotion's name, dates, and progress at a glance,
+    same as the old tab strip did.
   - **Acquisition** — Paid Media Tests: a status board and a timeline.
   - **Retention** — Emails: a status board and a month calendar.
   - **Website** — CRO/UX Tests: a status board and a timeline.

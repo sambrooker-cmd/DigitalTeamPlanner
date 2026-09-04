@@ -464,6 +464,77 @@ const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRad
 // server-side in the Firestore/Storage rules (isEditor()), same as every other permission here.
 const fieldsetResetStyle = { border: 'none', margin: 0, padding: 0, display: 'contents' };
 
+// Sidebar nav icons — small stroke-based SVGs (no icon library needed for six shapes). Fill is
+// only used for the Stats bars, which read better solid than outlined at this size.
+const SVG_ICON_PROPS = { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' };
+function iconMyWork() {
+  return e('svg', SVG_ICON_PROPS,
+    e('rect', { x: 1.5, y: 2.5, width: 13, height: 11, rx: 1.5 }),
+    e('path', { d: 'M4 6l1.3 1.3L7.5 5' }),
+    e('path', { d: 'M9.5 6h3' }),
+    e('path', { d: 'M4 10.3h8.5' })
+  );
+}
+function iconOverview() {
+  return e('svg', SVG_ICON_PROPS,
+    e('circle', { cx: 3, cy: 3, r: 1.4 }), e('path', { d: 'M6 3h8' }),
+    e('circle', { cx: 3, cy: 8, r: 1.4 }), e('path', { d: 'M6 8h6' }),
+    e('circle', { cx: 3, cy: 13, r: 1.4 }), e('path', { d: 'M6 13h4' })
+  );
+}
+function iconStats() {
+  return e('svg', SVG_ICON_PROPS,
+    e('path', { d: 'M2 13.5V2.5' }), e('path', { d: 'M2 13.5h12' }),
+    e('rect', { x: 4, y: 9, width: 2, height: 4.2, rx: 0.4, fill: 'currentColor', stroke: 'none' }),
+    e('rect', { x: 7.3, y: 6, width: 2, height: 7.2, rx: 0.4, fill: 'currentColor', stroke: 'none' }),
+    e('rect', { x: 10.6, y: 3.5, width: 2, height: 9.7, rx: 0.4, fill: 'currentColor', stroke: 'none' })
+  );
+}
+function iconBoards() {
+  return e('svg', SVG_ICON_PROPS,
+    e('rect', { x: 1.5, y: 2.5, width: 4, height: 11, rx: 1 }),
+    e('rect', { x: 6.5, y: 2.5, width: 4, height: 7.5, rx: 1 }),
+    e('rect', { x: 11.5, y: 2.5, width: 3, height: 9.5, rx: 1 })
+  );
+}
+function iconActivity() {
+  return e('svg', SVG_ICON_PROPS,
+    e('circle', { cx: 8, cy: 8.5, r: 5.5 }),
+    e('path', { d: 'M8 5.5v3l2 1.3' }),
+    e('path', { d: 'M5.5 1.5h5' })
+  );
+}
+function iconAdmin() {
+  return e('svg', SVG_ICON_PROPS,
+    e('path', { d: 'M8 1.5l5.5 2v4c0 4-2.4 6.3-5.5 7-3.1-.7-5.5-3-5.5-7v-4L8 1.5z' }),
+    e('path', { d: 'M5.8 8l1.6 1.6L10.3 6' })
+  );
+}
+function iconChevron() {
+  return e('svg', { viewBox: '0 0 16 16', width: 12, height: 12, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' },
+    e('path', { d: 'M10 3L5 8l5 5' })
+  );
+}
+
+// Sidebar collapsed/expanded is a personal convenience, same tier as the theme choice — per
+// browser in localStorage, not shared. With nothing stored yet (first visit, or a cleared
+// browser), it defaults to collapsed on mobile and expanded on desktop.
+function useSidebarCollapsed(isMobile) {
+  const [collapsed, setCollapsedState] = useState(() => {
+    try {
+      const stored = localStorage.getItem('sidebarCollapsed');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch (err) {}
+    return isMobile;
+  });
+  function setCollapsed(next) {
+    setCollapsedState(next);
+    try { localStorage.setItem('sidebarCollapsed', String(next)); } catch (err) {}
+  }
+  return [collapsed, setCollapsed];
+}
+
 // A single headline number — plain proportional figures (not tabular-nums; this isn't a column
 // of numbers that needs to align), color left to the default heading tone unless the value
 // itself is a status signal worth calling out (e.g. an overdue count).
@@ -1590,6 +1661,7 @@ function PromotionPlanner({ user }) {
   const online = useOnlineStatus();
   const [theme, setTheme] = useTheme();
   const isMobile = useIsMobile();
+  const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed(isMobile);
   const pagePadding = isMobile ? '1rem' : '1.5rem 2rem';
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
@@ -1956,6 +2028,15 @@ function PromotionPlanner({ user }) {
     timelineScrollRef.current.scrollLeft = Math.max(dayOffsetPx(new Date(), r.min, dayWidth) - 80, 0);
   }, [section, activeBoard, promoView, acqView, webView, rollupItems, timelinePromotions, paidTests, croTests, isMobile]);
   const [showArchived, setShowArchived] = useState(false);
+  const [promoPickerOpen, setPromoPickerOpen] = useState(false);
+  const promoPickerRef = useRef(null);
+  useEffect(() => {
+    function onDocMouseDown(ev) {
+      if (promoPickerRef.current && !promoPickerRef.current.contains(ev.target)) setPromoPickerOpen(false);
+    }
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, []);
   const [overviewSearch, setOverviewSearch] = useState('');
   const [overviewKinds, setOverviewKinds] = useState(new Set());
   const [overviewAssignee, setOverviewAssignee] = useState('');
@@ -2810,15 +2891,9 @@ function PromotionPlanner({ user }) {
       : { padding: '0.3125rem 0.125rem', background: 'none', fontSize: '0.875rem', fontWeight: 500, color: 'var(--text-secondary)', border: 'none', borderBottom: '2px solid transparent', cursor: 'pointer' };
   }
 
-  function sectionTabStyle(active) {
-    return active
-      ? { padding: '0.5rem 1rem', borderRadius: '0.5rem', fontSize: '0.9375rem', fontWeight: 600, background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' }
-      : { padding: '0.5rem 1rem', borderRadius: '0.5rem', fontSize: '0.9375rem', fontWeight: 600, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
-  }
-
-  // A third, visually distinct tier between the boxed top-level pills and the underline
+  // A third, visually distinct tier between the sidebar's section items and the underline
   // board/timeline sub-tabs: rounded team-colored chips for picking which channel "Boards" is
-  // showing, so it reads as "one level in" rather than another row of the same boxed pills.
+  // showing, so it reads as "one level in" rather than another row of the same style.
   // Same tinted-background + colored-text pairing as the team badges used elsewhere (task
   // cards, My Work, Overview) — not a solid team-color fill with white text, which fails
   // contrast in dark mode for the lighter dark-mode team colors (as low as ~2.3:1).
@@ -2828,58 +2903,92 @@ function PromotionPlanner({ user }) {
       : { padding: '0.375rem 0.875rem', borderRadius: '999px', fontSize: '0.8125rem', fontWeight: 600, background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
   }
 
-  const sectionTabs = e(
+  // The right-aligned Board/Timeline-style toggle that now shares a row with the channel chips
+  // (and, on its own, with Activity's Log/Recently-deleted) instead of stacking below them —
+  // channel and view are independent questions, not sequential steps.
+  function segStyle(active) {
+    return active
+      ? { padding: '0.3125rem 0.75rem', borderRadius: '0.375rem', fontSize: '0.8125rem', fontWeight: 600, color: PURPLE_TEXT, background: 'var(--surface)', border: 'none', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.08)' }
+      : { padding: '0.3125rem 0.75rem', borderRadius: '0.375rem', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' };
+  }
+  const segContainerStyle = { display: 'flex', gap: '0.125rem', background: 'var(--surface-alt)', borderRadius: '0.5rem', padding: '0.1875rem', marginLeft: 'auto' };
+
+  const SIDEBAR_ITEMS = [
+    { key: 'mywork', label: 'My Work', icon: iconMyWork },
+    { key: 'overview', label: 'Overview', icon: iconOverview },
+    { key: 'stats', label: 'Stats', icon: iconStats },
+    { key: 'boards', label: 'Boards', icon: iconBoards },
+    { key: 'activity', label: 'Activity', icon: iconActivity },
+  ].concat(isAdmin ? [{ key: 'admin', label: 'Admin', icon: iconAdmin }] : []);
+
+  const sidebarEl = e(
     'div',
-    { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
-    e('button', { onClick: () => setSection('mywork'), style: sectionTabStyle(section === 'mywork') }, 'My Work'),
-    e('button', { onClick: () => setSection('overview'), style: sectionTabStyle(section === 'overview') }, 'Overview'),
-    e('button', { onClick: () => setSection('stats'), style: sectionTabStyle(section === 'stats') }, 'Stats'),
-    e('button', { onClick: () => setSection('boards'), style: sectionTabStyle(section === 'boards') }, 'Boards'),
-    e('button', { onClick: () => setSection('activity'), style: sectionTabStyle(section === 'activity') }, 'Activity'),
-    isAdmin && e('button', { onClick: () => setSection('admin'), style: sectionTabStyle(section === 'admin') }, 'Admin')
+    { style: { width: sidebarCollapsed ? '3.5rem' : '13rem', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '0.125rem', padding: '0.75rem 0.5rem', borderRight: '1px solid var(--border)', background: 'var(--surface)' } },
+    SIDEBAR_ITEMS.map((item) => e(
+      'button',
+      {
+        key: item.key,
+        onClick: () => setSection(item.key),
+        title: item.label,
+        style: {
+          display: 'flex', alignItems: 'center', gap: '0.625rem', textAlign: 'left',
+          padding: sidebarCollapsed ? '0.5rem' : '0.5rem 0.625rem', justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+          borderRadius: '0.5rem', border: 'none', cursor: 'pointer',
+          background: section === item.key ? 'var(--surface-tint)' : 'none',
+          color: section === item.key ? PURPLE_TEXT : 'var(--text-secondary)',
+          boxShadow: section === item.key ? `inset 2px 0 0 ${PURPLE}` : 'none',
+          fontSize: '0.8125rem', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden',
+        },
+      },
+      e('span', { style: { display: 'flex', flexShrink: 0 } }, item.icon()),
+      !sidebarCollapsed && e('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, item.label)
+    )),
+    e('button', {
+      onClick: () => setSidebarCollapsed(!sidebarCollapsed),
+      title: sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar',
+      style: {
+        marginTop: 'auto', alignSelf: sidebarCollapsed ? 'center' : 'flex-end', width: '1.75rem', height: '1.75rem',
+        borderRadius: '0.375rem', border: '1px solid var(--border)', background: 'none', color: 'var(--text-muted)', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', transform: sidebarCollapsed ? 'rotate(180deg)' : 'none',
+      },
+    }, iconChevron())
   );
 
   const BOARD_TABS = [
     { id: 'promotions', label: 'Promotions', color: PURPLE_TEXT, bg: 'var(--surface-alt)' },
     ...TEAMS.map((t) => ({ id: t.id, label: t.label, color: t.color, bg: `rgba(${t.rgb}, 0.16)` })),
   ];
-  const boardSwitcher = section === 'boards' && e(
+  // Channel chips and the section's own view toggle (Board/Timeline, Board/Calendar) share one
+  // row — both answer "what am I looking at," not two sequential decisions.
+  const boardsContextRow = section === 'boards' && e(
     'div',
-    { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
-    BOARD_TABS.map((b) => e('button', { key: b.id, onClick: () => setActiveBoard(b.id), style: boardTabStyle(activeBoard === b.id, b) }, b.label))
+    { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
+    BOARD_TABS.map((b) => e('button', { key: b.id, onClick: () => setActiveBoard(b.id), style: boardTabStyle(activeBoard === b.id, b) }, b.label)),
+    activeBoard === 'promotions' && e(
+      'div', { style: segContainerStyle },
+      e('button', { onClick: () => setPromoView('board'), style: segStyle(promoView === 'board') }, 'Board'),
+      e('button', { onClick: () => setPromoView('timeline'), style: segStyle(promoView === 'timeline') }, 'Timeline')
+    ),
+    activeBoard === 'acquisition' && e(
+      'div', { style: segContainerStyle },
+      e('button', { onClick: () => setAcqView('board'), style: segStyle(acqView === 'board') }, 'Board'),
+      e('button', { onClick: () => setAcqView('timeline'), style: segStyle(acqView === 'timeline') }, 'Timeline')
+    ),
+    activeBoard === 'retention' && e(
+      'div', { style: segContainerStyle },
+      e('button', { onClick: () => setEmailView('board'), style: segStyle(emailView === 'board') }, 'Board'),
+      e('button', { onClick: () => setEmailView('calendar'), style: segStyle(emailView === 'calendar') }, 'Calendar')
+    ),
+    activeBoard === 'website' && e(
+      'div', { style: segContainerStyle },
+      e('button', { onClick: () => setWebView('board'), style: segStyle(webView === 'board') }, 'Board'),
+      e('button', { onClick: () => setWebView('timeline'), style: segStyle(webView === 'timeline') }, 'Timeline')
+    )
   );
 
   const subTabPadding = isMobile ? '0.75rem 1rem 1.25rem' : '0.75rem 2rem 1.25rem';
   let subTabs = null;
-  if (section === 'boards' && activeBoard === 'promotions') {
-    subTabs = e(
-      'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
-      e('button', { onClick: () => setPromoView('board'), style: tabStyle(promoView === 'board') }, 'Board'),
-      e('button', { onClick: () => setPromoView('timeline'), style: tabStyle(promoView === 'timeline') }, 'Timeline')
-    );
-  } else if (section === 'boards' && activeBoard === 'acquisition') {
-    subTabs = e(
-      'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
-      e('button', { onClick: () => setAcqView('board'), style: tabStyle(acqView === 'board') }, 'Board'),
-      e('button', { onClick: () => setAcqView('timeline'), style: tabStyle(acqView === 'timeline') }, 'Timeline')
-    );
-  } else if (section === 'boards' && activeBoard === 'retention') {
-    subTabs = e(
-      'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
-      e('button', { onClick: () => setEmailView('board'), style: tabStyle(emailView === 'board') }, 'Board'),
-      e('button', { onClick: () => setEmailView('calendar'), style: tabStyle(emailView === 'calendar') }, 'Calendar')
-    );
-  } else if (section === 'boards' && activeBoard === 'website') {
-    subTabs = e(
-      'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
-      e('button', { onClick: () => setWebView('board'), style: tabStyle(webView === 'board') }, 'Board'),
-      e('button', { onClick: () => setWebView('timeline'), style: tabStyle(webView === 'timeline') }, 'Timeline')
-    );
-  } else if (section === 'activity') {
+  if (section === 'activity') {
     subTabs = e(
       'div',
       { style: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem', padding: subTabPadding } },
@@ -2892,50 +3001,56 @@ function PromotionPlanner({ user }) {
   if (section === 'boards' && activeBoard === 'promotions' && promoView === 'board') {
     const archivedCount = promotions.filter((p) => p.archived).length;
     const visibleTabs = promotions.filter((p) => showArchived || !p.archived);
-    const promoTabs = e(
+
+    // Picking which promotion to view isn't navigation, so it isn't styled or positioned like
+    // it — a compact picker in the content header itself, not a fourth stacked nav bar. Opening
+    // it shows the same name/dates/progress detail the old tab strip did, just as a dropdown
+    // instead of a permanent horizontal scroller.
+    const promoPicker = e(
       'div',
-      { style: { display: 'flex', gap: '0.75rem', padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem 1rem', overflowX: 'auto', borderBottom: '1px solid var(--border)', background: 'var(--surface)' } },
-      visibleTabs.map((p) => {
-        const active = p.id === activePromoId;
-        const pctVal = progressFor(p);
-        return e(
-          'button',
-          {
-            key: p.id,
-            onClick: () => setActivePromoId(p.id),
-            style: { flexShrink: 0, textAlign: 'left', padding: '0.75rem 1rem', borderRadius: '0.75rem', border: `1px solid ${active ? PURPLE : 'var(--border)'}`, background: active ? 'var(--surface-tint)' : 'var(--surface)', minWidth: '190px', cursor: 'pointer', opacity: p.archived ? 0.6 : 1 },
-          },
-          e(
-            'div',
-            { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } },
-            e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
-            p.archived && e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived')
-          ),
-          e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' } }, p.endDate ? `${formatDate(p.launchDate)} – ${formatDate(p.endDate)}` : `Launches ${formatDate(p.launchDate)}`),
-          e(
-            'div',
-            { style: { width: '100%', height: '6px', borderRadius: '999px', marginTop: '0.5rem', overflow: 'hidden', background: 'var(--surface-alt)' } },
-            e('div', { style: { height: '100%', borderRadius: '999px', width: `${pctVal}%`, background: active ? PURPLE : 'var(--accent-muted)' } })
-          )
-        );
-      }),
-      archivedCount > 0 && e(
-        'button',
-        {
-          key: 'toggle-archived',
-          onClick: () => setShowArchived((s) => !s),
-          style: { flexShrink: 0, alignSelf: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
-        },
-        showArchived ? 'Hide archived' : `Show archived (${archivedCount})`
-      ),
+      { ref: promoPickerRef, style: { position: 'relative' } },
       e(
         'button',
-        {
-          key: 'manage-templates',
-          onClick: () => setTemplatesModalOpen(true),
-          style: { flexShrink: 0, alignSelf: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
-        },
-        `Manage templates${promoTemplates && promoTemplates.length > 0 ? ` (${promoTemplates.length})` : ''}`
+        { onClick: () => setPromoPickerOpen((o) => !o), style: { display: 'flex', alignItems: 'baseline', gap: '0.4375rem', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } },
+        e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo ? activePromo.name : 'Promotions'),
+        e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 500 } }, `▾ ${visibleTabs.length} promotion${visibleTabs.length === 1 ? '' : 's'}`)
+      ),
+      promoPickerOpen && e(
+        'div',
+        { style: { position: 'absolute', top: 'calc(100% + 0.375rem)', left: 0, width: '20rem', maxWidth: '85vw', maxHeight: '24rem', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.75rem', boxShadow: '0 8px 24px rgba(0,0,0,0.18)', zIndex: 40, padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.375rem' } },
+        visibleTabs.length === 0 && e('p', { style: { fontSize: '0.8125rem', color: 'var(--text-muted)', padding: '0.5rem' } }, 'No promotions yet.'),
+        visibleTabs.map((p) => {
+          const active = p.id === activePromoId;
+          const pctVal = progressFor(p);
+          return e(
+            'button',
+            {
+              key: p.id,
+              onClick: () => { setActivePromoId(p.id); setPromoPickerOpen(false); },
+              style: { textAlign: 'left', padding: '0.625rem 0.75rem', borderRadius: '0.625rem', border: `1px solid ${active ? PURPLE : 'var(--border)'}`, background: active ? 'var(--surface-tint)' : 'none', cursor: 'pointer', opacity: p.archived ? 0.6 : 1 },
+            },
+            e(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } },
+              e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
+              p.archived && e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived')
+            ),
+            e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.125rem' } }, p.endDate ? `${formatDate(p.launchDate)} – ${formatDate(p.endDate)}` : `Launches ${formatDate(p.launchDate)}`),
+            e(
+              'div',
+              { style: { width: '100%', height: '5px', borderRadius: '999px', marginTop: '0.375rem', overflow: 'hidden', background: 'var(--surface-alt)' } },
+              e('div', { style: { height: '100%', borderRadius: '999px', width: `${pctVal}%`, background: active ? PURPLE : 'var(--accent-muted)' } })
+            )
+          );
+        }),
+        e(
+          'div',
+          { style: { display: 'flex', justifyContent: 'space-between', gap: '0.5rem', paddingTop: '0.375rem', marginTop: '0.125rem', borderTop: '1px solid var(--border)' } },
+          archivedCount > 0
+            ? e('button', { onClick: () => setShowArchived((s) => !s), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.25rem' } }, showArchived ? 'Hide archived' : `Show archived (${archivedCount})`)
+            : e('span'),
+          e('button', { onClick: () => { setTemplatesModalOpen(true); setPromoPickerOpen(false); }, style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.25rem' } }, `Manage templates${promoTemplates && promoTemplates.length > 0 ? ` (${promoTemplates.length})` : ''}`)
+        )
       )
     );
 
@@ -3099,7 +3214,7 @@ function PromotionPlanner({ user }) {
             e(
               'div',
               { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.625rem' } },
-              e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, activePromo.name),
+              promoPicker,
               activePromo.archived && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived'),
               e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit'),
               canEdit && e('button', { onClick: archiveActivePromoClick, style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, activePromo.archived ? 'Unarchive' : 'Archive')
@@ -3153,7 +3268,12 @@ function PromotionPlanner({ user }) {
       );
     }
 
-    boardSection = e(React.Fragment, null, promoTabs, promoDetail);
+    boardSection = promoDetail || e(
+      'div',
+      { style: { padding: isMobile ? '1.5rem 1rem' : '1.5rem 2rem' } },
+      promoPicker,
+      e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '1rem' } }, 'No promotions yet.')
+    );
   }
 
   // Generic timeline renderer shared by Promotions, Paid Media, and CRO/UX — each just
@@ -4013,19 +4133,27 @@ function PromotionPlanner({ user }) {
     'div',
     { style: { width: '100%', minHeight: '100vh', background: 'var(--bg)', fontFamily: 'Arial, Helvetica, sans-serif' } },
     header,
-    dataErrorBanner,
-    sectionTabs,
-    boardSwitcher,
-    subTabs,
-    myWorkSection,
-    overviewSection,
-    statsSection,
-    boardSection,
-    timelineSection,
-    emailsSection,
-    testTrackerSection,
-    activitySection,
-    section === 'admin' && e(AdminSection, { currentUserEmail: user.email, users, pushToast, isMobile }),
+    e(
+      'div',
+      { style: { display: 'flex', alignItems: 'stretch' } },
+      sidebarEl,
+      e(
+        'div',
+        { style: { flex: 1, minWidth: 0 } },
+        dataErrorBanner,
+        boardsContextRow,
+        subTabs,
+        myWorkSection,
+        overviewSection,
+        statsSection,
+        boardSection,
+        timelineSection,
+        emailsSection,
+        testTrackerSection,
+        activitySection,
+        section === 'admin' && e(AdminSection, { currentUserEmail: user.email, users, pushToast, isMobile })
+      )
+    ),
     taskModalEl,
     promoModalEl,
     emailModalEl,
