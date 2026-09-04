@@ -1106,8 +1106,10 @@ function PromotionPlanner({ user }) {
   let timelineSection = null;
   if (view === 'timeline' && range) {
     const dayWidth = isMobile ? 22 : 34;
+    const labelWidth = isMobile ? 104 : 168;
     const contentWidth = Math.max(dayOffsetPx(range.max, range.min, dayWidth), 1);
     const todayLeft = dayOffsetPx(today, range.min, dayWidth);
+    const labelCellStyle = { position: 'sticky', left: 0, zIndex: 3, flexShrink: 0, width: `${labelWidth}px`, background: 'var(--bg)', paddingRight: '0.75rem' };
 
     const tickEls = ticks.map((t) => e('div', { key: t.toISOString(), style: { position: 'absolute', fontSize: '0.75rem', color: 'var(--text-muted)', left: `${dayOffsetPx(t, range.min, dayWidth)}px` } }, t.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })));
 
@@ -1118,17 +1120,24 @@ function PromotionPlanner({ user }) {
       const launchLeft = dayOffsetPx(launch, range.min, dayWidth);
       const endLeft = dayOffsetPx(end, range.min, dayWidth);
       return e(
-        'button',
-        { key: p.id, onClick: () => { setActivePromoId(p.id); setView('board'); }, style: { width: '100%', textAlign: 'left', marginBottom: '1.5rem', display: 'block', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } },
+        'div',
+        {
+          key: p.id,
+          role: 'button',
+          tabIndex: 0,
+          onClick: () => { setActivePromoId(p.id); setView('board'); },
+          onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setActivePromoId(p.id); setView('board'); } },
+          style: { display: 'flex', alignItems: 'center', marginBottom: '1.5rem', cursor: 'pointer' },
+        },
         e(
           'div',
-          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' } },
-          e('span', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK } }, p.name),
-          e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, stageLabel)
+          { style: labelCellStyle, title: p.name },
+          e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, p.name),
+          e('div', { style: { marginTop: '0.25rem' } }, e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, stageLabel))
         ),
         e(
           'div',
-          { style: { position: 'relative', height: '24px', borderRadius: '999px', background: 'var(--surface-alt)' } },
+          { style: { position: 'relative', height: '24px', width: `${contentWidth}px`, flexShrink: 0, borderRadius: '999px', background: 'var(--surface-alt)' } },
           e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: PURPLE_LIGHT } }),
           e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchLeft}px`, width: `${Math.max(endLeft - launchLeft, 4)}px`, background: PURPLE } }),
           e('div', { title: `Launch ${formatDate(p.launchDate)}`, style: { position: 'absolute', borderRadius: '999px', left: `${launchLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
@@ -1143,7 +1152,7 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' } },
-        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Drag left or right to see promotions outside the current window.'),
+        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Drag left or right to see promotions outside the current window. The promotion name stays put.'),
         e('button', {
           onClick: () => { if (timelineScrollRef.current) timelineScrollRef.current.scrollLeft = todayLeft - 80; },
           style: { fontSize: '0.75rem', color: PURPLE_TEXT, background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0, marginLeft: '1rem' },
@@ -1154,12 +1163,17 @@ function PromotionPlanner({ user }) {
         { ref: timelineScrollRef, style: { overflowX: 'auto', cursor: 'grab', paddingBottom: '0.5rem' } },
         e(
           'div',
-          { style: { position: 'relative', width: `${contentWidth}px` } },
-          e('div', { style: { position: 'relative', marginBottom: '1.5rem', height: '18px' } }, ...tickEls),
+          { style: { position: 'relative', width: `${labelWidth + contentWidth}px` } },
+          e(
+            'div',
+            { style: { display: 'flex', marginBottom: '1.5rem' } },
+            e('div', { style: { flexShrink: 0, width: `${labelWidth}px` } }),
+            e('div', { style: { position: 'relative', width: `${contentWidth}px`, flexShrink: 0, height: '18px' } }, ...tickEls)
+          ),
           e(
             'div',
             { style: { position: 'relative', paddingTop: '4px' } },
-            e('div', { style: { position: 'absolute', top: 0, bottom: 0, width: '1px', left: `${todayLeft}px`, background: TODAY_COLOR, zIndex: 1 } }),
+            e('div', { style: { position: 'absolute', top: 0, bottom: 0, width: '1px', left: `${labelWidth + todayLeft}px`, background: TODAY_COLOR, zIndex: 1 } }),
             ...rows
           )
         )
