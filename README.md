@@ -1,8 +1,9 @@
 # Promotion Planner
 
-A kanban and timeline board for planning marketing promotions across the
-Acquisition, Retention, and Website teams — from briefing through launch to
-results reporting.
+A shared planning tool for the Acquisition, Retention, and Website teams:
+a kanban and timeline board for marketing promotions (briefing through
+launch to results reporting), and an Emails module for the day-to-day
+email calendar and briefing pipeline.
 
 ## Live board
 
@@ -64,6 +65,10 @@ service cloud.firestore {
       }
     }
 
+    match /emails/{emailId} {
+      allow read, write: if isAllowed();
+    }
+
     match /activity/{entryId} {
       allow read, write: if isAllowed();
     }
@@ -97,6 +102,15 @@ by these rules server-side, not just hidden in the UI.
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never
   overwrite each other.
+- `emails/{emailId}` — one document per BAU/lifecycle email (`subject`,
+  `sendDate`, `status` — Briefing/Testing/Approved/Scheduled/Sent/Reported —
+  `assignee`, `relatedPromoId` (optional, links it to a promotion),
+  `hubspotLink` (optional), `notes`, plus the same attribution fields).
+  Shown under the **Emails** tab as a status board (drag between columns)
+  or a month calendar (click a day to add one, click a chip to edit it).
+  This is where the email team's planning calendar and Trello-style
+  briefing status live — HubSpot itself stays the tool that builds and
+  sends the email; `hubspotLink` just points at it.
 - `activity/{entryId}` — an append-only change log: one document per create,
   edit, move, or delete anywhere on the board (`action`, `by`, `at`,
   `promoName`, `taskTitle`, `detail`). Shown newest-first under the

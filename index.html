@@ -153,6 +153,8 @@ const TYPES = [
   { id: 'paid', label: 'Paid media ad' },
 ];
 
+const EMAIL_STATUSES = ['Briefing', 'Testing', 'Approved', 'Scheduled', 'Sent', 'Reported'];
+
 const ACTION_LABELS = {
   task_created: 'created task',
   task_updated: 'edited task',
@@ -164,6 +166,10 @@ const ACTION_LABELS = {
   promo_archived: 'archived promotion',
   promo_unarchived: 'unarchived promotion',
   board_reset: 'reset the board to sample data',
+  email_created: 'created email',
+  email_updated: 'edited email',
+  email_moved: 'moved email',
+  email_deleted: 'deleted email',
 };
 
 const PURPLE = 'var(--accent)';
@@ -188,6 +194,37 @@ function formatDate(dateStr) {
   if (!dateStr) return '';
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+// --- Calendar month-grid helpers (all local-time; never round-trips sendDate strings
+// through `new Date()`, so there's no UTC/local day-shift risk when matching them up). ---
+function startOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+function addMonths(d, n) {
+  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+}
+
+function toDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// 6 weeks (42 days), Monday-start, covering the month plus lead/trail days.
+function buildMonthGrid(monthStart) {
+  const firstWeekday = (monthStart.getDay() + 6) % 7; // 0 = Monday
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(monthStart.getDate() - firstWeekday);
+  const days = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    days.push(d);
+  }
+  return days;
 }
 
 function seedPromotions() {
@@ -470,6 +507,20 @@ function usePromotionsCollection() {
   return docs;
 }
 
+function useEmailsCollection() {
+  const [docs, setDocs] = useState(null); // null = loading
+  useEffect(() => {
+    const q = query(collection(fdb, 'emails'), orderBy('sendDate'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      () => setDocs((prev) => prev || [])
+    );
+    return unsub;
+  }, []);
+  return docs;
+}
+
 function useTasksByPromo(promoIds) {
   const [tasksByPromo, setTasksByPromo] = useState({});
   const unsubsRef = useRef({});
@@ -525,6 +576,7 @@ function PromotionPlanner({ user }) {
   const promoDocs = usePromotionsCollection();
   const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
   const tasksByPromo = useTasksByPromo(promoIds);
+  const emails = useEmailsCollection();
 
   // Seed the store once, guarded by a transaction so concurrent first-openers don't double-seed.
   useEffect(() => {
@@ -585,6 +637,11 @@ function PromotionPlanner({ user }) {
   const [promoForm, setPromoForm] = useState(null);
   const [taskForm, setTaskForm] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [emailView, setEmailView] = useState('board');
+  const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()));
+  const [emailModal, setEmailModal] = useState(false);
+  const [emailForm, setEmailForm] = useState(null);
+  const [draggedEmailId, setDraggedEmailId] = useState(null);
 
   const activePromo = promotions ? (promotions.find((p) => p.id === activePromoId) || promotions[0]) : null;
 
@@ -667,6 +724,85 @@ function PromotionPlanner({ user }) {
       await updateDoc(doc(fdb, 'promotions', promoId), { archived, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: archived ? 'promo_archived' : 'promo_unarchived', promoId, promoName });
     } finally { setBusy(false); }
+  }
+
+  // --- Email mutations: a flat top-level collection, no team dimension (like a task, not a promotion). ---
+  async function addEmail(data) {
+    setBusy(true);
+    try {
+      await addDoc(collection(fdb, 'emails'), {
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+      });
+      await logActivity({ action: 'email_created', taskTitle: data.subject });
+    } finally { setBusy(false); }
+  }
+
+  async function saveExistingEmail(emailId, data) {
+    setBusy(true);
+    try {
+      await updateDoc(doc(fdb, 'emails', emailId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'email_updated', taskTitle: data.subject });
+    } finally { setBusy(false); }
+  }
+
+  async function removeEmail(emailId, subject) {
+    setBusy(true);
+    try {
+      await deleteDoc(doc(fdb, 'emails', emailId));
+      await logActivity({ action: 'email_deleted', taskTitle: subject });
+    } finally { setBusy(false); }
+  }
+
+  async function moveEmail(emailId, subject, status, fromStatus) {
+    try {
+      await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'email_moved', taskTitle: subject, detail: `${fromStatus} → ${status}` });
+    } catch (err) {}
+  }
+
+  function openNewEmail(status, sendDate) {
+    setEmailForm({ id: null, subject: '', sendDate: sendDate || '', status: status || EMAIL_STATUSES[0], assignee: '', relatedPromoId: '', hubspotLink: '', notes: '' });
+    setEmailModal(true);
+  }
+
+  function openEditEmail(email) {
+    setEmailForm({ ...email });
+    setEmailModal(true);
+  }
+
+  async function saveEmail() {
+    if (!emailForm.subject.trim() || !emailForm.sendDate) return;
+    const { id, subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes } = emailForm;
+    const data = { subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes };
+    try {
+      if (id) await saveExistingEmail(id, data);
+      else await addEmail(data);
+    } catch (err) {
+      window.alert('Could not save this email: ' + err.message);
+      return;
+    }
+    setEmailModal(false);
+    setEmailForm(null);
+  }
+
+  async function deleteEmailClick() {
+    if (!emailForm.id) return;
+    if (!window.confirm(`Delete "${emailForm.subject}"? This can't be undone.`)) return;
+    try {
+      await removeEmail(emailForm.id, emailForm.subject);
+    } catch (err) {
+      window.alert('Could not delete this email: ' + err.message);
+      return;
+    }
+    setEmailModal(false);
+    setEmailForm(null);
+  }
+
+  function handleEmailDrop(status) {
+    if (!draggedEmailId) return;
+    const email = (emails || []).find((em) => em.id === draggedEmailId);
+    if (email && email.status !== status) moveEmail(email.id, email.subject, status, email.status);
+    setDraggedEmailId(null);
   }
 
   async function resetData() {
@@ -910,6 +1046,7 @@ function PromotionPlanner({ user }) {
     { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
     e('button', { onClick: () => setView('board'), style: tabStyle(view === 'board') }, 'Board'),
     e('button', { onClick: () => setView('timeline'), style: tabStyle(view === 'timeline') }, 'Timeline'),
+    e('button', { onClick: () => setView('emails'), style: tabStyle(view === 'emails') }, 'Emails'),
     e('button', { onClick: () => setView('activity'), style: tabStyle(view === 'activity') }, 'Activity')
   );
 
@@ -1191,6 +1328,154 @@ function PromotionPlanner({ user }) {
     );
   }
 
+  let emailsSection = null;
+  if (view === 'emails') {
+    function renderEmailCard(email) {
+      const promo = email.relatedPromoId ? promotions.find((p) => p.id === email.relatedPromoId) : null;
+      return e(
+        'div',
+        {
+          key: email.id,
+          draggable: true,
+          onDragStart: () => setDraggedEmailId(email.id),
+          onDragEnd: () => setDraggedEmailId(null),
+          onClick: () => openEditEmail(email),
+          className: `task-card${draggedEmailId === email.id ? ' dragging' : ''}`,
+          style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: PURPLE, borderLeftStyle: 'solid' },
+        },
+        e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', fontWeight: 500, lineHeight: 1.35 } }, email.subject),
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' } },
+          e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, email.assignee || 'Unassigned'),
+          e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, formatDate(email.sendDate))
+        ),
+        promo && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `🔗 ${promo.name}`)
+      );
+    }
+
+    function renderEmailColumn(status, minHeight) {
+      const items = (emails || []).filter((em) => em.status === status);
+      return e(
+        'div',
+        {
+          key: status,
+          onDragOver: (ev) => ev.preventDefault(),
+          onDrop: () => handleEmailDrop(status),
+          style: { borderRadius: '0.5rem', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'var(--surface-alt)', minHeight: minHeight || '116px' },
+        },
+        ...items.map(renderEmailCard),
+        e('button', { onClick: () => openNewEmail(status, ''), style: { fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left', padding: '0 0.25rem', marginTop: 'auto', background: 'none', border: 'none', cursor: 'pointer' } }, '+ Add email')
+      );
+    }
+
+    let emailBoard = null;
+    let emailCalendar = null;
+
+    if (emailView === 'board') {
+      if (isMobile) {
+        emailBoard = e(
+          'div',
+          null,
+          EMAIL_STATUSES.map((status) => e(
+            'div',
+            { key: status, style: { marginBottom: '0.75rem' } },
+            e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.375rem' } }, status),
+            renderEmailColumn(status, '56px')
+          ))
+        );
+      } else {
+        emailBoard = e(
+          'div',
+          { style: { display: 'grid', gap: '0.625rem', gridTemplateColumns: `repeat(${EMAIL_STATUSES.length}, 1fr)` } },
+          EMAIL_STATUSES.map((s) => e('div', { key: s, style: { fontSize: '0.875rem', fontWeight: 600, padding: '0 0.5rem 0.25rem', color: 'var(--text-muted)' } }, s)),
+          EMAIL_STATUSES.map((status) => renderEmailColumn(status))
+        );
+      }
+    } else {
+      const monthDays = buildMonthGrid(calendarMonth);
+      const todayKey = toDateKey(new Date());
+      const emailsByDay = {};
+      (emails || []).forEach((em) => {
+        if (!em.sendDate) return;
+        (emailsByDay[em.sendDate] = emailsByDay[em.sendDate] || []).push(em);
+      });
+      const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      emailCalendar = e(
+        'div',
+        null,
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' } },
+          e('h3', { className: 'font-display', style: { fontSize: '1.1rem', color: PURPLE_DARK, margin: 0 } }, calendarMonth.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })),
+          e(
+            'div',
+            { style: { display: 'flex', gap: '0.5rem', alignItems: 'center' } },
+            e('button', { onClick: () => setCalendarMonth((m) => addMonths(m, -1)), style: { fontSize: '0.875rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, '←'),
+            e('button', { onClick: () => setCalendarMonth(startOfMonth(new Date())), style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Today'),
+            e('button', { onClick: () => setCalendarMonth((m) => addMonths(m, 1)), style: { fontSize: '0.875rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, '→')
+          )
+        ),
+        e(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: isMobile ? '2px' : '0.375rem' } },
+          weekdayLabels.map((wd) => e('div', { key: wd, style: { fontSize: '0.6875rem', fontWeight: 600, color: 'var(--text-muted)', textAlign: 'center', padding: '0.25rem 0' } }, isMobile ? wd.slice(0, 1) : wd)),
+          monthDays.map((day) => {
+            const key = toDateKey(day);
+            const inMonth = day.getMonth() === calendarMonth.getMonth();
+            const isToday = key === todayKey;
+            const dayEmails = emailsByDay[key] || [];
+            return e(
+              'div',
+              {
+                key: key,
+                onClick: () => openNewEmail(EMAIL_STATUSES[0], key),
+                style: {
+                  minHeight: isMobile ? '52px' : '84px', borderRadius: '0.5rem', padding: '0.25rem', cursor: 'pointer',
+                  background: isToday ? 'var(--surface-tint)' : 'var(--surface-alt)', opacity: inMonth ? 1 : 0.45,
+                  border: isToday ? `1px solid ${PURPLE}` : '1px solid transparent',
+                  display: 'flex', flexDirection: 'column', gap: '0.125rem', overflow: 'hidden',
+                },
+              },
+              e('div', { style: { fontSize: '0.6875rem', color: isToday ? PURPLE_TEXT : 'var(--text-muted)', fontWeight: isToday ? 700 : 400 } }, day.getDate()),
+              dayEmails.slice(0, isMobile ? 2 : 3).map((em) => e(
+                'div',
+                {
+                  key: em.id,
+                  onClick: (ev) => { ev.stopPropagation(); openEditEmail(em); },
+                  title: em.subject,
+                  style: { fontSize: '0.625rem', padding: '0.0625rem 0.25rem', borderRadius: '0.25rem', background: 'var(--surface)', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+                },
+                em.subject
+              )),
+              dayEmails.length > (isMobile ? 2 : 3) && e('div', { style: { fontSize: '0.625rem', color: 'var(--text-muted)' } }, `+${dayEmails.length - (isMobile ? 2 : 3)} more`)
+            );
+          })
+        )
+      );
+    }
+
+    emailsSection = e(
+      'div',
+      { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem' } },
+      e(
+        'div',
+        { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem' } },
+        e(
+          'div',
+          { style: { display: 'flex', gap: '0.5rem' } },
+          e('button', { onClick: () => setEmailView('board'), style: tabStyle(emailView === 'board') }, 'Board'),
+          e('button', { onClick: () => setEmailView('calendar'), style: tabStyle(emailView === 'calendar') }, 'Calendar')
+        ),
+        e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
+      ),
+      !emails && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      emails && emailView === 'board' && emailBoard,
+      emails && emailView === 'calendar' && emailCalendar,
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap an email to edit it, or a day to add one." : "Drag cards between columns, click a card to edit it, or click a day on the calendar to add one.")
+    );
+  }
+
   let activitySection = null;
   if (view === 'activity') {
     activitySection = e(
@@ -1281,6 +1566,46 @@ function PromotionPlanner({ user }) {
     );
   }
 
+  let emailModalEl = null;
+  if (emailModal && emailForm) {
+    emailModalEl = e(
+      Modal,
+      { title: emailForm.id ? 'Edit email' : 'New email', onClose: () => { setEmailModal(false); setEmailForm(null); } },
+      e(Field, { label: 'Subject' }, e('input', { style: inputStyle, value: emailForm.subject, onChange: (ev) => setEmailForm({ ...emailForm, subject: ev.target.value }), placeholder: 'e.g. This week: cabin upgrade offers' })),
+      e(
+        'div',
+        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+        e(Field, { label: 'Send date' }, e('input', { type: 'date', style: inputStyle, value: emailForm.sendDate, onChange: (ev) => setEmailForm({ ...emailForm, sendDate: ev.target.value }) })),
+        e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: emailForm.status, onChange: (ev) => setEmailForm({ ...emailForm, status: ev.target.value }) }, EMAIL_STATUSES.map((s) => e('option', { key: s, value: s }, s))))
+      ),
+      e(
+        'div',
+        { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+        e(Field, { label: 'Assignee' }, e('input', { style: inputStyle, value: emailForm.assignee, onChange: (ev) => setEmailForm({ ...emailForm, assignee: ev.target.value }) })),
+        e(Field, { label: 'Related promotion (optional)' }, e(
+          'select',
+          { style: inputStyle, value: emailForm.relatedPromoId || '', onChange: (ev) => setEmailForm({ ...emailForm, relatedPromoId: ev.target.value }) },
+          e('option', { value: '' }, 'None'),
+          promotions.map((p) => e('option', { key: p.id, value: p.id }, p.name))
+        ))
+      ),
+      e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' })),
+      e(Field, { label: emailForm.status === 'Reported' ? 'Performance notes' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: emailForm.notes, onChange: (ev) => setEmailForm({ ...emailForm, notes: ev.target.value }), placeholder: emailForm.status === 'Reported' ? 'Open rate, click rate, bookings attributed, what to repeat or change' : '' })),
+      emailForm.id && e(
+        'p',
+        { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
+        `Created by ${emailForm.createdBy || 'unknown'}${emailForm.createdAt ? ' · ' + formatDateTime(emailForm.createdAt) : ''}`,
+        emailForm.updatedBy && e('span', null, e('br'), `Last edited by ${emailForm.updatedBy}${emailForm.updatedAt ? ' · ' + formatDateTime(emailForm.updatedAt) : ''}`)
+      ),
+      e(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
+        emailForm.id ? e('button', { onClick: deleteEmailClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete') : e('span'),
+        e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
+      )
+    );
+  }
+
   return e(
     'div',
     { style: { width: '100%', minHeight: '100vh', background: 'var(--bg)', fontFamily: 'Arial, Helvetica, sans-serif' } },
@@ -1288,9 +1613,11 @@ function PromotionPlanner({ user }) {
     viewToggle,
     boardSection,
     timelineSection,
+    emailsSection,
     activitySection,
     taskModalEl,
-    promoModalEl
+    promoModalEl,
+    emailModalEl
   );
 }
 
