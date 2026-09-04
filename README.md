@@ -394,27 +394,28 @@ simply never been deleted; nothing is backfilled or required at creation
 time. See "Recently Deleted" above for the UI this powers.
 
 - `promotions/{promoId}` — one document per promotion (`name`, `launchDate`,
-  `endDate` (optional), `description`, `parentPromoId` (optional, links it
-  to another promotion as its umbrella/central one), `archived` (boolean),
-  plus `createdBy`/`createdAt`/`updatedBy`/`updatedAt`). When `endDate`
-  isn't set, the timeline estimates the promotion runs 14 days from launch.
-  Archived promotions are hidden from the timeline and, by default, from
-  the board's promotion picker (a "Show archived" toggle reveals them
-  there so they can be unarchived or deleted).
+  `endDate` (optional), `description`, `archived` (boolean), `isMainBanner`
+  (boolean, see below), plus `createdBy`/`createdAt`/`updatedBy`/
+  `updatedAt`). When `endDate` isn't set, the timeline estimates the
+  promotion runs 14 days from launch. Archived promotions are hidden from
+  the timeline and, by default, from the board's promotion picker (a "Show
+  archived" toggle reveals them there so they can be unarchived or
+  deleted).
 
-  For a big umbrella campaign (Wave Season, say) running several distinct
-  sub-promotions underneath it, a sub-promotion can name the umbrella one
-  as its `parentPromoId`. A "central" promotion — one that's *named as*
-  someone else's `parentPromoId` — isn't a different kind of record: it's
-  planned exactly the same way as any other promotion (same board, same
-  task structure), just visually called out wherever promotions appear —
-  the promotion picker, the Promotions timeline, and the Overview
-  timeline — with a small "Central" badge and one shade bolder color
-  (`PURPLE_DARK` where a regular promotion's bar is `PURPLE`, and so on),
-  same accent family throughout rather than a new color. There's no
-  separate list of sub-promotions or "part of" breadcrumb — the only
-  place the relationship is set is the "Parent promotion" dropdown on a
-  sub-promotion's own edit form; everywhere else, it's just a color.
+  At any one time, at most one promotion is the site's **main banner
+  promotion** — everything else is an ordinary promotion (a flash sale, a
+  smaller campaign). It isn't a different kind of record: a banner
+  promotion is planned exactly the same way as any other (same board,
+  same task structure) and there's no link between it and the rest —
+  it's purely a single `isMainBanner: true` flag, visually called out
+  wherever promotions appear (the promotion picker, the Promotions
+  timeline, the Overview timeline) with a small "Main banner" badge and
+  one shade bolder color (`PURPLE_DARK` where a regular promotion's bar
+  is `PURPLE`), same accent family throughout rather than a new color.
+  "Set as main banner" / "Remove as main banner" on a promotion's edit
+  screen is the only way to change it, and setting it on one promotion
+  automatically clears it from whichever one held it before — the app
+  enforces there's only ever one.
 - `promotions/{promoId}/tasks/{taskId}` — one document per task/result card
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never

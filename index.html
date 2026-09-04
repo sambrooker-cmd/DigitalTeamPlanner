@@ -228,6 +228,8 @@ const ACTION_LABELS = {
   promo_restored: 'restored promotion',
   promo_purged: 'permanently deleted promotion',
   promo_archived: 'archived promotion',
+  promo_set_banner: 'set as the main banner promotion',
+  promo_unset_banner: 'removed as the main banner promotion',
   promo_unarchived: 'unarchived promotion',
   board_reset: 'reset the board to sample data',
   email_created: 'created email',
@@ -1793,21 +1795,11 @@ function PromotionPlanner({ user }) {
 
   const timelinePromotions = useMemo(() => (promotions || []).filter((p) => !p.archived), [promotions]);
 
-  // A promotion is "central" purely by being named as someone else's parentPromoId — no
-  // separate flag to set or keep in sync. Drives the "Central" badge/bolder color wherever
-  // promotions are listed (the picker, the timeline), never a structural difference otherwise:
-  // a central promotion is planned exactly like any other, just visually called out.
-  const centralPromoIds = useMemo(() => {
-    const ids = new Set();
-    (promotions || []).forEach((p) => { if (p.parentPromoId) ids.add(p.parentPromoId); });
-    return ids;
-  }, [promotions]);
-
   // Merged, chronologically-sorted list for the unified Overview timeline.
   const rollupItems = useMemo(() => {
     const items = [];
     timelinePromotions.forEach((p) => items.push({
-      id: `promotion-${p.id}`, promoId: p.id, kind: 'promotion', name: p.name, dates: taskDates(p), stage: promoStageLabel(p),
+      id: `promotion-${p.id}`, isMainBanner: p.isMainBanner || false, kind: 'promotion', name: p.name, dates: taskDates(p), stage: promoStageLabel(p),
       assignees: [...new Set((p.tasks || []).map((t) => t.assignee).filter(Boolean))],
       onOpen: () => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); },
     }));
@@ -2263,6 +2255,24 @@ function PromotionPlanner({ user }) {
     } finally { setBusy(false); }
   }
 
+  // Exactly one promotion at a time can be the main banner promotion — setting it on one clears
+  // it from whoever held it before, in two writes rather than a transaction (consistent with how
+  // the rest of this app trades strict atomicity for simplicity; a same-second double-set by two
+  // people is an edge case rare enough not to warrant it, and easy to fix by hand if it happens).
+  async function setMainBannerPromo(promoId, promoName, isBanner) {
+    setBusy(true);
+    try {
+      if (isBanner) {
+        const currentHolder = (promotions || []).find((p) => p.isMainBanner && p.id !== promoId);
+        if (currentHolder) {
+          await updateDoc(doc(fdb, 'promotions', currentHolder.id), { isMainBanner: false, updatedBy: actorName, updatedAt: serverTimestamp() });
+        }
+      }
+      await updateDoc(doc(fdb, 'promotions', promoId), { isMainBanner: isBanner, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: isBanner ? 'promo_set_banner' : 'promo_unset_banner', promoId, promoName });
+    } finally { setBusy(false); }
+  }
+
   // --- Email mutations: a flat top-level collection, no team dimension (like a task, not a promotion). ---
   async function addEmail(data) {
     setBusy(true);
@@ -2577,8 +2587,8 @@ function PromotionPlanner({ user }) {
     });
   }
 
-  function openNewPromo(parentPromoId) {
-    setPromoForm({ id: null, name: '', launchDate: '', endDate: '', description: '', parentPromoId: parentPromoId || '' });
+  function openNewPromo() {
+    setPromoForm({ id: null, name: '', launchDate: '', endDate: '', description: '' });
     setSelectedTemplateId('');
     setPromoModal(true);
   }
@@ -2593,7 +2603,7 @@ function PromotionPlanner({ user }) {
   }
 
   function openEditPromo(promo) {
-    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, endDate: promo.endDate || '', description: promo.description || '', parentPromoId: promo.parentPromoId || '', archived: promo.archived || false, createdBy: promo.createdBy, createdAt: promo.createdAt });
+    setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, endDate: promo.endDate || '', description: promo.description || '', archived: promo.archived || false, isMainBanner: promo.isMainBanner || false, createdBy: promo.createdBy, createdAt: promo.createdAt });
     setPromoModal(true);
   }
 
@@ -2603,7 +2613,7 @@ function PromotionPlanner({ user }) {
   // promotion almost always runs on different dates.
   function duplicatePromoClick() {
     if (!promoForm) return;
-    setPromoForm({ id: null, name: `${promoForm.name} (copy)`, launchDate: '', endDate: '', description: promoForm.description || '', parentPromoId: promoForm.parentPromoId || '' });
+    setPromoForm({ id: null, name: `${promoForm.name} (copy)`, launchDate: '', endDate: '', description: promoForm.description || '' });
     setSelectedTemplateId('');
   }
 
@@ -2659,8 +2669,8 @@ function PromotionPlanner({ user }) {
     }
     // Only the fields the form actually edits — never forward whatever else happens to be
     // sitting on promoForm (e.g. createdBy/createdAt, which older promotions may not have).
-    const { id, name, launchDate, endDate, description, parentPromoId } = promoForm;
-    const data = { name, launchDate, endDate, description, parentPromoId: parentPromoId || '' };
+    const { id, name, launchDate, endDate, description } = promoForm;
+    const data = { name, launchDate, endDate, description };
     try {
       if (id) {
         await saveExistingPromotion(id, data);
@@ -2717,6 +2727,18 @@ function PromotionPlanner({ user }) {
       await archivePromo(promoForm);
     } catch (err) {
       pushToast('Could not archive this promotion: ' + err.message);
+      return;
+    }
+    setPromoModal(false);
+    setPromoForm(null);
+  }
+
+  async function toggleMainBannerPromo() {
+    if (!promoForm.id) return;
+    try {
+      await setMainBannerPromo(promoForm.id, promoForm.name, !promoForm.isMainBanner);
+    } catch (err) {
+      pushToast('Could not update the main banner promotion: ' + err.message);
       return;
     }
     setPromoModal(false);
@@ -3064,15 +3086,15 @@ function PromotionPlanner({ user }) {
             e(
               'div',
               { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } },
-              e('div', { style: { fontSize: '0.875rem', fontWeight: centralPromoIds.has(p.id) ? 700 : 600, color: PURPLE_DARK } }, p.name),
-              centralPromoIds.has(p.id) && e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: PURPLE_DARK, color: 'var(--on-accent)', fontWeight: 700 } }, 'Central'),
+              e('div', { style: { fontSize: '0.875rem', fontWeight: p.isMainBanner ? 700 : 600, color: PURPLE_DARK } }, p.name),
+              p.isMainBanner && e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: PURPLE_DARK, color: 'var(--on-accent)', fontWeight: 700 } }, 'Main banner'),
               p.archived && e('span', { style: { fontSize: '0.625rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived')
             ),
             e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.125rem' } }, p.endDate ? `${formatDate(p.launchDate)} – ${formatDate(p.endDate)}` : `Launches ${formatDate(p.launchDate)}`),
             e(
               'div',
               { style: { width: '100%', height: '5px', borderRadius: '999px', marginTop: '0.375rem', overflow: 'hidden', background: 'var(--surface-alt)' } },
-              e('div', { style: { height: '100%', borderRadius: '999px', width: `${pctVal}%`, background: centralPromoIds.has(p.id) ? PURPLE_DARK : (active ? PURPLE : 'var(--accent-muted)') } })
+              e('div', { style: { height: '100%', borderRadius: '999px', width: `${pctVal}%`, background: p.isMainBanner ? PURPLE_DARK : (active ? PURPLE : 'var(--accent-muted)') } })
             )
           );
         }),
@@ -3248,7 +3270,7 @@ function PromotionPlanner({ user }) {
               'div',
               { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.625rem' } },
               promoPicker,
-              centralPromoIds.has(activePromo.id) && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: PURPLE_DARK, color: 'var(--on-accent)', fontWeight: 700 } }, 'Central'),
+              activePromo.isMainBanner && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: PURPLE_DARK, color: 'var(--on-accent)', fontWeight: 700 } }, 'Main banner'),
               activePromo.archived && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-muted)' } }, 'Archived'),
               e('button', { onClick: () => openEditPromo(activePromo), style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Edit'),
               canEdit && e('button', { onClick: archiveActivePromoClick, style: { fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, activePromo.archived ? 'Unarchive' : 'Archive')
@@ -3331,11 +3353,11 @@ function PromotionPlanner({ user }) {
       const startLeft = dayOffsetPx(start, range.min, dayWidth);
       const launchLeft = dayOffsetPx(launch, range.min, dayWidth);
       const endLeft = dayOffsetPx(end, range.min, dayWidth);
-      // A "central" row (only promotions can be — see centralPromoIds) gets one shade bolder
-      // throughout: PURPLE where a normal row is PURPLE_LIGHT, PURPLE_DARK where it's PURPLE.
-      // Same palette, no new color introduced, just heavier — so it reads as "more prominent,"
-      // not as an unrelated category.
-      const central = cfg.isCentral ? cfg.isCentral(item) : false;
+      // The one main banner promotion (only promotions can be — see isMainBanner on
+      // promotions/{promoId}) gets one shade bolder throughout: PURPLE where a normal row is
+      // PURPLE_LIGHT, PURPLE_DARK where it's PURPLE. Same palette, no new color introduced, just
+      // heavier — so it reads as "more prominent," not as an unrelated category.
+      const isBanner = cfg.isMainBanner ? cfg.isMainBanner(item) : false;
       return e(
         'div',
         {
@@ -3349,11 +3371,11 @@ function PromotionPlanner({ user }) {
         e(
           'div',
           { style: labelCellStyle, title: name },
-          e('div', { style: { fontSize: '0.875rem', fontWeight: central ? 700 : 600, color: PURPLE_DARK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, name),
+          e('div', { style: { fontSize: '0.875rem', fontWeight: isBanner ? 700 : 600, color: PURPLE_DARK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, name),
           e(
             'div',
             { style: { display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.25rem' } },
-            central && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: PURPLE_DARK, color: 'var(--on-accent)', fontWeight: 700 } }, 'Central'),
+            isBanner && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: PURPLE_DARK, color: 'var(--on-accent)', fontWeight: 700 } }, 'Main banner'),
             cfg.getKind && (() => {
               const kind = cfg.getKind(item);
               return kind && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: kind.bg, color: kind.color, fontWeight: 600 } }, kind.label);
@@ -3364,8 +3386,8 @@ function PromotionPlanner({ user }) {
         e(
           'div',
           { style: { position: 'relative', height: '24px', width: `${contentWidth}px`, flexShrink: 0, borderRadius: '999px', background: 'var(--surface-alt)' } },
-          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: central ? PURPLE : PURPLE_LIGHT } }),
-          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchLeft}px`, width: `${Math.max(endLeft - launchLeft, 4)}px`, background: central ? PURPLE_DARK : PURPLE } }),
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: isBanner ? PURPLE : PURPLE_LIGHT } }),
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchLeft}px`, width: `${Math.max(endLeft - launchLeft, 4)}px`, background: isBanner ? PURPLE_DARK : PURPLE } }),
           e('div', { title: `${cfg.launchTitle} ${formatDate(launch)}`, style: { position: 'absolute', borderRadius: '999px', left: `${launchLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
           hasRealEnd && e('div', { title: `${cfg.endTitle} ${formatDate(end)}`, style: { position: 'absolute', borderRadius: '999px', left: `${endLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } })
         )
@@ -3576,7 +3598,7 @@ function PromotionPlanner({ user }) {
         getName: (it) => it.name,
         getStage: (it) => it.stage,
         getKind: (it) => ROLLUP_KINDS[it.kind],
-        isCentral: (it) => it.kind === 'promotion' && centralPromoIds.has(it.promoId),
+        isMainBanner: (it) => it.kind === 'promotion' && it.isMainBanner,
         onOpenItem: (it) => it.onOpen(),
         prepLabel: 'Prep / build',
         liveLabel: 'Live (some estimated at 14 days where no end date is set)',
@@ -3642,7 +3664,7 @@ function PromotionPlanner({ user }) {
       getRangeDates: (p) => { const d = taskDates(p); return { start: d.start, end: d.reportEnd }; },
       getName: (p) => p.name,
       getStage: promoStageLabel,
-      isCentral: (p) => centralPromoIds.has(p.id),
+      isMainBanner: (p) => p.isMainBanner,
       onOpenItem: (p) => { setActivePromoId(p.id); setSection('boards'); setActiveBoard('promotions'); setPromoView('board'); },
       prepLabel: 'Prep (briefing to review)',
       liveLabel: 'Live (no end date set: estimated at 14 days)',
@@ -4030,12 +4052,6 @@ function PromotionPlanner({ user }) {
           e(Field, { label: 'End date (optional)' }, e('input', { type: 'date', style: inputStyle, min: promoForm.launchDate || undefined, value: promoForm.endDate || '', onChange: (ev) => setPromoForm({ ...promoForm, endDate: ev.target.value }) }))
         ),
         e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
-        e(Field, { label: 'Parent promotion (optional)' }, e(
-          'select',
-          { style: inputStyle, value: promoForm.parentPromoId || '', onChange: (ev) => setPromoForm({ ...promoForm, parentPromoId: ev.target.value }) },
-          e('option', { value: '' }, "None — this is its own promotion"),
-          promotions.filter((p) => p.id !== promoForm.id).map((p) => e('option', { key: p.id, value: p.id }, p.archived ? `${p.name} (archived)` : p.name))
-        )),
         promoForm.id && e(
           'p',
           { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
@@ -4049,6 +4065,11 @@ function PromotionPlanner({ user }) {
             { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
             e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
             e('button', { onClick: saveAsTemplateClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Save as template'),
+            e('button', {
+              onClick: toggleMainBannerPromo,
+              title: promoForm.isMainBanner ? 'Remove main banner status from this promotion' : 'Make this the one main banner promotion (replaces whichever one currently holds it)',
+              style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' },
+            }, promoForm.isMainBanner ? 'Remove as main banner' : 'Set as main banner'),
             e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
             e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
           ) : e('span'),
