@@ -418,8 +418,13 @@ time. See "Recently Deleted" above for the UI this powers.
   same attribution fields), so concurrent edits from different teams never
   overwrite each other.
 - `emails/{emailId}` — one document per BAU/lifecycle email (`subject`,
-  `sendDate`, `status` — Briefing/Testing/Approved/Scheduled/Sent/Reported —
-  `assignee`, `relatedPromoId` (optional, links it to a promotion),
+  `previewText` (optional), `segment` (optional — the audience this send
+  targets, e.g. "Past guests — Caribbean"), `cta` (optional — the primary
+  link/action), `sendDate`, `status` —
+  Briefing/Testing/Approved/Scheduled/Sent/Reported — `assignee`,
+  `relatedPromoId` (optional, links it to a promotion), `briefDocLink`
+  (optional — the brief/creative doc, kept separate from `hubspotLink`
+  since briefing usually starts before HubSpot is even touched),
   `hubspotLink` (optional), `notes`, plus the same attribution fields).
   Shown under the **Retention** section as a status board (drag between
   columns) or a month calendar (click a day to add one, click a chip to
@@ -427,6 +432,14 @@ time. See "Recently Deleted" above for the UI this powers.
   This is where the email team's planning calendar and Trello-style
   briefing status live — HubSpot itself stays the tool that builds and
   sends the email; `hubspotLink` just points at it.
+
+  For a send that repeats on a cadence (a weekly newsletter, a monthly
+  loyalty email), **Repeat next week** / **Repeat next month** sit next to
+  Duplicate on an existing email's edit screen — same pre-filled,
+  nothing's-written-until-you-hit-Save pattern, but keeping the exact
+  subject (it's the next occurrence of the same send, not a distinct new
+  one) and advancing the send date automatically instead of leaving it
+  blank.
 - `paidTests/{testId}` and `croTests/{testId}` — one document per
   experiment (Paid Media and CRO/UX respectively), each shown under its
   own team section as a status board or a timeline. Both are

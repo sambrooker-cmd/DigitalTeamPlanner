@@ -2098,10 +2098,14 @@ function PromotionPlanner({ user }) {
   function exportEmailsCSV() {
     downloadCSV('emails.csv', emails || [], [
       { label: 'Subject', get: (em) => em.subject },
+      { label: 'Preview text', get: (em) => em.previewText || '' },
+      { label: 'Audience / segment', get: (em) => em.segment || '' },
+      { label: 'CTA / primary link', get: (em) => em.cta || '' },
       { label: 'Send date', get: (em) => em.sendDate || '' },
       { label: 'Status', get: (em) => em.status },
       { label: 'Assignee', get: (em) => assigneeLabel(em.assignee) },
       { label: 'Related promotion', get: (em) => { const p = em.relatedPromoId ? promotions.find((pr) => pr.id === em.relatedPromoId) : null; return p ? p.name : ''; } },
+      { label: 'Brief doc link', get: (em) => em.briefDocLink || '' },
       { label: 'HubSpot link', get: (em) => em.hubspotLink || '' },
       { label: 'Notes', get: (em) => em.notes || '' },
     ]);
@@ -2306,7 +2310,7 @@ function PromotionPlanner({ user }) {
   }
 
   function openNewEmail(status, sendDate, relatedPromoId) {
-    setEmailForm({ id: null, subject: '', sendDate: sendDate || '', status: status || EMAIL_STATUSES[0], assignee: '', relatedPromoId: relatedPromoId || '', hubspotLink: '', notes: '' });
+    setEmailForm({ id: null, subject: '', sendDate: sendDate || '', status: status || EMAIL_STATUSES[0], assignee: '', relatedPromoId: relatedPromoId || '', segment: '', previewText: '', cta: '', briefDocLink: '', hubspotLink: '', notes: '' });
     setEmailModal(true);
   }
 
@@ -2315,11 +2319,29 @@ function PromotionPlanner({ user }) {
     setEmailModal(true);
   }
 
-  // Same unsaved-copy pattern as duplicatePromoClick: send date, HubSpot link, and notes reset
-  // since those are specific to the original send; status goes back to the first stage.
+  // Same unsaved-copy pattern as duplicatePromoClick: send date, links, and notes reset since
+  // those are specific to the original send; status goes back to the first stage. The brief
+  // itself (segment/preview text/CTA) carries over, since a "(copy)" is usually still targeting
+  // the same audience with a similar message.
   function duplicateEmailClick() {
     if (!emailForm) return;
-    setEmailForm({ id: null, subject: `${emailForm.subject} (copy)`, sendDate: '', status: EMAIL_STATUSES[0], assignee: emailForm.assignee, relatedPromoId: emailForm.relatedPromoId || '', hubspotLink: '', notes: '' });
+    setEmailForm({ id: null, subject: `${emailForm.subject} (copy)`, sendDate: '', status: EMAIL_STATUSES[0], assignee: emailForm.assignee, relatedPromoId: emailForm.relatedPromoId || '', segment: emailForm.segment || '', previewText: emailForm.previewText || '', cta: emailForm.cta || '', briefDocLink: '', hubspotLink: '', notes: '' });
+  }
+
+  // For a BAU/lifecycle send that repeats on a cadence (a weekly newsletter, a monthly loyalty
+  // email) — same unsaved-copy pattern as Duplicate, but keeps the exact subject (this is the
+  // next occurrence of the same send, not a distinct new one) and pre-fills the next send date
+  // from the current one instead of leaving it blank.
+  function repeatEmailClick(unit) {
+    if (!emailForm) return;
+    let nextSendDate = '';
+    if (emailForm.sendDate) {
+      const d = new Date(emailForm.sendDate);
+      if (unit === 'week') d.setDate(d.getDate() + 7);
+      else d.setMonth(d.getMonth() + 1);
+      nextSendDate = toDateKey(d);
+    }
+    setEmailForm({ id: null, subject: emailForm.subject, sendDate: nextSendDate, status: EMAIL_STATUSES[0], assignee: emailForm.assignee, relatedPromoId: emailForm.relatedPromoId || '', segment: emailForm.segment || '', previewText: emailForm.previewText || '', cta: emailForm.cta || '', briefDocLink: '', hubspotLink: '', notes: '' });
   }
 
   async function saveEmail() {
@@ -2327,8 +2349,8 @@ function PromotionPlanner({ user }) {
       pushToast('Subject and send date are required.');
       return;
     }
-    const { id, subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes } = emailForm;
-    const data = { subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes };
+    const { id, subject, sendDate, status, assignee, relatedPromoId, segment, previewText, cta, briefDocLink, hubspotLink, notes } = emailForm;
+    const data = { subject, sendDate, status, assignee, relatedPromoId, segment: segment || '', previewText: previewText || '', cta: cta || '', briefDocLink: briefDocLink || '', hubspotLink, notes };
     try {
       if (id) await saveExistingEmail(id, data);
       else await addEmail(data);
@@ -4090,6 +4112,13 @@ function PromotionPlanner({ user }) {
         'fieldset',
         { disabled: !canEdit, style: fieldsetResetStyle },
         e(Field, { label: 'Subject', required: true }, e('input', { style: inputStyle, value: emailForm.subject, onChange: (ev) => setEmailForm({ ...emailForm, subject: ev.target.value }), placeholder: 'e.g. This week: cabin upgrade offers' })),
+        e(Field, { label: 'Preview text (optional)' }, e('input', { style: inputStyle, value: emailForm.previewText || '', onChange: (ev) => setEmailForm({ ...emailForm, previewText: ev.target.value }), placeholder: "The line that shows after the subject in someone's inbox" })),
+        e(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+          e(Field, { label: 'Audience / segment (optional)' }, e('input', { style: inputStyle, value: emailForm.segment || '', onChange: (ev) => setEmailForm({ ...emailForm, segment: ev.target.value }), placeholder: 'e.g. Past guests — Caribbean' })),
+          e(Field, { label: 'CTA / primary link (optional)' }, e('input', { style: inputStyle, value: emailForm.cta || '', onChange: (ev) => setEmailForm({ ...emailForm, cta: ev.target.value }), placeholder: 'e.g. Book now → /caribbean-sale' }))
+        ),
         e(
           'div',
           { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
@@ -4107,7 +4136,12 @@ function PromotionPlanner({ user }) {
             promotions.map((p) => e('option', { key: p.id, value: p.id }, p.archived ? `${p.name} (archived)` : p.name))
           ))
         ),
-        e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' })),
+        e(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
+          e(Field, { label: 'Brief doc link (optional)' }, e('input', { style: inputStyle, value: emailForm.briefDocLink || '', onChange: (ev) => setEmailForm({ ...emailForm, briefDocLink: ev.target.value }), placeholder: 'Google Doc, Figma, etc.' })),
+          e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' }))
+        ),
         e(Field, { label: emailForm.status === 'Reported' ? 'Performance notes' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: emailForm.notes, onChange: (ev) => setEmailForm({ ...emailForm, notes: ev.target.value }), placeholder: emailForm.status === 'Reported' ? 'Open rate, click rate, bookings attributed, what to repeat or change' : '' })),
         emailForm.id && e(
           'p',
@@ -4120,8 +4154,10 @@ function PromotionPlanner({ user }) {
           { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
           emailForm.id ? e(
             'div',
-            { style: { display: 'flex', gap: '1rem' } },
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
             e('button', { onClick: duplicateEmailClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+            e('button', { onClick: () => repeatEmailClick('week'), title: 'Same subject and brief, next send date +1 week', style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Repeat next week'),
+            e('button', { onClick: () => repeatEmailClick('month'), title: 'Same subject and brief, next send date +1 month', style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Repeat next month'),
             e('button', { onClick: deleteEmailClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
           ) : e('span'),
           e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
