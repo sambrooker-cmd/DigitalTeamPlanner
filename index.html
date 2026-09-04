@@ -175,6 +175,7 @@ const TEST_TRACKERS = {
       { key: 'endDate', label: 'End date', type: 'date' },
       { key: 'budget', label: 'Budget', type: 'text', placeholder: 'e.g. £500/day' },
       { key: 'assignee', label: 'Assignee', type: 'user' },
+      { key: 'relatedPromoId', label: 'Related promotion (optional)', type: 'promo' },
       { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_OPTIONS },
       { key: 'result', label: 'Result / learning', type: 'textarea', placeholder: 'What happened, key metrics, what to repeat or change next time' },
     ],
@@ -192,6 +193,7 @@ const TEST_TRACKERS = {
       { key: 'startDate', label: 'Start date', type: 'date', required: true },
       { key: 'endDate', label: 'End date', type: 'date' },
       { key: 'assignee', label: 'Assignee', type: 'user' },
+      { key: 'relatedPromoId', label: 'Related promotion (optional)', type: 'promo' },
       { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_OPTIONS },
       { key: 'result', label: 'Result / learning', type: 'textarea', placeholder: 'What happened, key metrics, ship decision' },
     ],
@@ -413,9 +415,18 @@ function renderAssigneeSelect(value, onChange, users) {
 }
 
 // Renders one input for a config-driven test-tracker field (see TEST_TRACKERS).
-function renderTestFieldInput(field, value, onChange, users) {
+function renderTestFieldInput(field, value, onChange, users, promotions) {
   if (field.type === 'user') {
     return renderAssigneeSelect(value, onChange, users);
+  }
+  if (field.type === 'promo') {
+    const options = (promotions || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    return e(
+      'select',
+      { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) },
+      e('option', { value: '' }, 'None'),
+      options.map((p) => e('option', { key: p.id, value: p.id }, p.archived ? `${p.name} (archived)` : p.name))
+    );
   }
   if (field.type === 'select') {
     return e('select', { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) }, field.options.map((o) => e('option', { key: o, value: o }, o)));
@@ -1161,6 +1172,12 @@ function PromotionPlanner({ user }) {
     return u ? (u.displayName || u.email) : email;
   }
 
+  function promoLabel(promoId) {
+    if (!promoId) return '';
+    const p = (promotions || []).find((pr) => pr.id === promoId);
+    return p ? p.name : '';
+  }
+
   function exportPromoTasksCSV(promo) {
     downloadCSV(`${promo.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-tasks.csv`, promo.tasks, [
       { label: 'Team', get: (t) => (TEAMS.find((tm) => tm.id === t.team) || {}).label || t.team },
@@ -1188,7 +1205,7 @@ function PromotionPlanner({ user }) {
   function exportTestsCSV(config, testItems) {
     const columns = config.fields.map((f) => ({
       label: f.label,
-      get: (it) => (f.type === 'user' ? assigneeLabel(it[f.key]) : (it[f.key] || '')),
+      get: (it) => (f.type === 'user' ? assigneeLabel(it[f.key]) : f.type === 'promo' ? promoLabel(it[f.key]) : (it[f.key] || '')),
     }));
     columns.push({ label: 'Status', get: (it) => it.status });
     downloadCSV(`${config.label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.csv`, testItems || [], columns);
@@ -1303,8 +1320,8 @@ function PromotionPlanner({ user }) {
     } catch (err) { window.alert('Could not move this email: ' + err.message); }
   }
 
-  function openNewEmail(status, sendDate) {
-    setEmailForm({ id: null, subject: '', sendDate: sendDate || '', status: status || EMAIL_STATUSES[0], assignee: '', relatedPromoId: '', hubspotLink: '', notes: '' });
+  function openNewEmail(status, sendDate, relatedPromoId) {
+    setEmailForm({ id: null, subject: '', sendDate: sendDate || '', status: status || EMAIL_STATUSES[0], assignee: '', relatedPromoId: relatedPromoId || '', hubspotLink: '', notes: '' });
     setEmailModal(true);
   }
 
@@ -1396,9 +1413,10 @@ function PromotionPlanner({ user }) {
     } catch (err) { window.alert('Could not move this test: ' + err.message); }
   }
 
-  function openNewTest(config, status) {
+  function openNewTest(config, status, overrides) {
     const blank = { id: null, status: status || config.statuses[0], __collection: config.collection, __label: config.label };
     config.fields.forEach((f) => { blank[f.key] = ''; });
+    if (overrides) Object.assign(blank, overrides);
     setTestForm(blank);
     setTestModal(true);
   }
@@ -1922,6 +1940,61 @@ function PromotionPlanner({ user }) {
         board = e('div', { style: { display: 'grid', gap: '0.625rem', gridTemplateColumns: '140px repeat(5, 1fr)' } }, ...gridHeader, ...gridRows);
       }
 
+      // "Linked work" — Paid Media Tests, CRO/UX Tests, and Emails that named this promotion as
+      // their `relatedPromoId`. These are the literal same records shown on their own team's
+      // board, not copies, so editing one here or there is the same write — nothing to keep in
+      // sync. A test/email doesn't have to be linked to a promotion at all (most Acquisition/CRO
+      // work is standalone, ongoing experimentation), so this only shows what's actually tied here.
+      const linkedPaid = (paidTests || []).filter((t) => t.relatedPromoId === activePromo.id);
+      const linkedCro = (croTests || []).filter((t) => t.relatedPromoId === activePromo.id);
+      const linkedEmails = (emails || []).filter((em) => em.relatedPromoId === activePromo.id);
+      const linkedItems = [
+        ...linkedPaid.map((t) => ({ id: `linked-paid-${t.id}`, kind: ROLLUP_KINDS.paid, name: t.name, status: t.status, onOpen: () => openEditTest(TEST_TRACKERS.paid, t) })),
+        ...linkedCro.map((t) => ({ id: `linked-cro-${t.id}`, kind: ROLLUP_KINDS.cro, name: t.name, status: t.status, onOpen: () => openEditTest(TEST_TRACKERS.cro, t) })),
+        ...linkedEmails.map((em) => ({ id: `linked-email-${em.id}`, kind: ROLLUP_KINDS.email, name: em.subject, status: em.status, onOpen: () => openEditEmail(em) })),
+      ];
+      const linkAddButtonStyle = { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' };
+      const linkedWorkSection = e(
+        'div',
+        { style: { marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border)' } },
+        e(
+          'div',
+          { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.75rem' } },
+          e('h3', { className: 'font-display', style: { fontSize: '1rem', color: PURPLE_DARK, margin: 0 } }, 'Linked work'),
+          e(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' } },
+            e('button', { onClick: () => openNewTest(TEST_TRACKERS.paid, undefined, { relatedPromoId: activePromo.id }), style: linkAddButtonStyle }, '+ Paid Media Test'),
+            e('button', { onClick: () => openNewTest(TEST_TRACKERS.cro, undefined, { relatedPromoId: activePromo.id }), style: linkAddButtonStyle }, '+ CRO/UX Test'),
+            e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], '', activePromo.id), style: linkAddButtonStyle }, '+ Email')
+          )
+        ),
+        linkedItems.length === 0
+          ? e('p', { style: { fontSize: '0.8125rem', color: 'var(--text-muted)' } }, 'Nothing from Acquisition, Retention, or Website linked to this promotion yet.')
+          : e(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
+              linkedItems.map((it) => e(
+                'div',
+                {
+                  key: it.id,
+                  role: 'button',
+                  tabIndex: 0,
+                  onClick: it.onOpen,
+                  onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); } },
+                  style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.625rem 0.75rem', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' },
+                },
+                e(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 } },
+                  e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: it.kind.bg, color: it.kind.color, fontWeight: 600, flexShrink: 0 } }, it.kind.label),
+                  e('span', { style: { fontSize: '0.875rem', color: PURPLE_DARK, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.name)
+                ),
+                e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0 } }, it.status)
+              ))
+            )
+      );
+
       promoDetail = e(
         'div',
         { style: { padding: isMobile ? '1rem' : '1.5rem 2rem' } },
@@ -1966,6 +2039,7 @@ function PromotionPlanner({ user }) {
         taskErrors[activePromo.id] && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', marginBottom: '1rem' } }, `Couldn't load tasks for this promotion: ${taskErrors[activePromo.id]}. What's shown below may be missing cards.`),
         typeFilters,
         board,
+        linkedWorkSection,
         e(
           'div',
           { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '1.5rem' } },
@@ -2658,7 +2732,7 @@ function PromotionPlanner({ user }) {
     testModalEl = e(
       Modal,
       { title: `${testForm.id ? 'Edit' : 'New'} ${config.label.replace(/s$/, '')}`, onClose: () => { setTestModal(false); setTestForm(null); } },
-      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label, required: f.required }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users))),
+      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label, required: f.required }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users, promotions))),
       e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
       testForm.id && e(
         'p',

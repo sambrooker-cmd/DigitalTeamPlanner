@@ -207,13 +207,28 @@ by these rules server-side, not just hidden in the UI.
   than duplicated code — add a third tracker (e.g. QA/stability) by
   adding a new entry there, not by copying a whole module. Paid Media:
   `name`, `channel`, `hypothesis`, `variants`, `startDate`, `endDate`,
-  `budget`, `assignee`, `outcome`, `result`, status Planned → Live →
-  Analyzing → Concluded. CRO/UX: `name`, `area`, `hypothesis`,
-  `variant`, `metric`, `startDate`, `endDate`, `assignee`, `outcome`,
-  `result`, status Idea → Building → Live → Analyzing → Concluded. On
-  the timeline, the "prep" bar runs from when the test was logged
-  (`createdAt`) to `startDate`, and "live" runs `startDate` to `endDate`
-  (or a 14-day estimate if `endDate` isn't set yet).
+  `budget`, `assignee`, `relatedPromoId` (optional, links it to a
+  promotion), `outcome`, `result`, status Planned → Live → Analyzing →
+  Concluded. CRO/UX: `name`, `area`, `hypothesis`, `variant`, `metric`,
+  `startDate`, `endDate`, `assignee`, `relatedPromoId` (optional),
+  `outcome`, `result`, status Idea → Building → Live → Analyzing →
+  Concluded. On the timeline, the "prep" bar runs from when the test was
+  logged (`createdAt`) to `startDate`, and "live" runs `startDate` to
+  `endDate` (or a 14-day estimate if `endDate` isn't set yet). Most
+  Acquisition/Website work is standalone, ongoing experimentation with no
+  tie to any one promotion, so this link is optional, not required —
+  a test either carries it or it doesn't, same as an email's own
+  `relatedPromoId`.
+
+  A promotion's own board shows a **Linked work** section listing any
+  Paid Media Tests, CRO/UX Tests, and Emails that named it as their
+  `relatedPromoId`, each with its own real status, clickable straight
+  into its native edit modal — plus "+ Paid Media Test" / "+ CRO/UX
+  Test" / "+ Email" buttons that open a new one pre-linked to that
+  promotion. This is the literal same document shown in two places, not
+  a duplicate kept in sync — editing it from the promotion's board or
+  from its own team channel is the same write, so there's nothing that
+  can drift out of sync between them.
 - `.../comments/{commentId}` — a comment thread under any commentable item
   (`promotions/{promoId}/comments`, `promotions/{promoId}/tasks/{taskId}/comments`,
   `emails/{emailId}/comments`, `paidTests/{testId}/comments`,
