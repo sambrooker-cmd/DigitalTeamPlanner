@@ -224,6 +224,16 @@ const PURPLE_DARK = 'var(--heading)';
 const PURPLE_LIGHT = 'var(--accent-soft)';
 const TODAY_COLOR = 'var(--today)';
 
+// Kind badges for the unified Overview timeline — reuses each team's existing color so an
+// item's owner reads at a glance. Promotion is cross-team, so it gets the neutral accent
+// treatment instead of a team color.
+const ROLLUP_KINDS = {
+  promotion: { label: 'Promotion', color: PURPLE_TEXT, bg: 'var(--surface-alt)' },
+  email: { label: 'Email', color: 'var(--team-retention)', bg: 'rgba(var(--team-retention-rgb), 0.16)' },
+  paid: { label: 'Paid Media', color: 'var(--team-acquisition)', bg: 'rgba(var(--team-acquisition-rgb), 0.16)' },
+  cro: { label: 'CRO/UX', color: 'var(--team-website)', bg: 'rgba(var(--team-website-rgb), 0.16)' },
+};
+
 function genId() {
   if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
   return 't' + Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -710,6 +720,32 @@ function PromotionPlanner({ user }) {
 
   const timelinePromotions = useMemo(() => (promotions || []).filter((p) => !p.archived), [promotions]);
 
+  // Merged, chronologically-sorted list for the unified Overview timeline.
+  const rollupItems = useMemo(() => {
+    const items = [];
+    timelinePromotions.forEach((p) => items.push({
+      id: `promotion-${p.id}`, kind: 'promotion', name: p.name, dates: taskDates(p), stage: promoStageLabel(p),
+      onOpen: () => { setActivePromoId(p.id); setSection('promotions'); setPromoView('board'); },
+    }));
+    (emails || []).forEach((em) => {
+      const d = em.sendDate ? new Date(em.sendDate) : new Date();
+      items.push({
+        id: `email-${em.id}`, kind: 'email', name: em.subject, dates: { start: d, launch: d, end: d, hasRealEnd: false }, stage: em.status,
+        onOpen: () => { setSection('retention'); setEmailView('board'); openEditEmail(em); },
+      });
+    });
+    (paidTests || []).forEach((t) => items.push({
+      id: `paid-${t.id}`, kind: 'paid', name: t.name, dates: testDates(t), stage: t.status,
+      onOpen: () => { setSection('acquisition'); setAcqView('board'); openEditTest(TEST_TRACKERS.paid, t); },
+    }));
+    (croTests || []).forEach((t) => items.push({
+      id: `cro-${t.id}`, kind: 'cro', name: t.name, dates: testDates(t), stage: t.status,
+      onOpen: () => { setSection('website'); setWebView('board'); openEditTest(TEST_TRACKERS.cro, t); },
+    }));
+    items.sort((a, b) => a.dates.launch.getTime() - b.dates.launch.getTime());
+    return items;
+  }, [timelinePromotions, emails, paidTests, croTests]);
+
   const [activePromoId, setActivePromoId] = useState(null);
   useEffect(() => {
     if (promotions && promotions.length && !activePromoId) {
@@ -729,14 +765,15 @@ function PromotionPlanner({ user }) {
     if (!timelineScrollRef.current) return;
     let items = null;
     let getDates = null;
-    if (section === 'promotions' && promoView === 'timeline') { items = timelinePromotions; getDates = taskDates; }
+    if (section === 'overview') { items = rollupItems; getDates = (it) => it.dates; }
+    else if (section === 'promotions' && promoView === 'timeline') { items = timelinePromotions; getDates = taskDates; }
     else if (section === 'acquisition' && acqView === 'timeline') { items = paidTests || []; getDates = testDates; }
     else if (section === 'website' && webView === 'timeline') { items = croTests || []; getDates = testDates; }
     else return;
     const r = computeRange(items, getDates);
     const dayWidth = isMobile ? 22 : 34;
     timelineScrollRef.current.scrollLeft = Math.max(dayOffsetPx(new Date(), r.min, dayWidth) - 80, 0);
-  }, [section, promoView, acqView, webView, timelinePromotions, paidTests, croTests, isMobile]);
+  }, [section, promoView, acqView, webView, rollupItems, timelinePromotions, paidTests, croTests, isMobile]);
   const [showArchived, setShowArchived] = useState(false);
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
@@ -1257,6 +1294,7 @@ function PromotionPlanner({ user }) {
   const sectionTabs = e(
     'div',
     { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
+    e('button', { onClick: () => setSection('overview'), style: sectionTabStyle(section === 'overview') }, 'Overview'),
     e('button', { onClick: () => setSection('promotions'), style: sectionTabStyle(section === 'promotions') }, 'Promotions'),
     e('button', { onClick: () => setSection('acquisition'), style: sectionTabStyle(section === 'acquisition') }, 'Acquisition'),
     e('button', { onClick: () => setSection('retention'), style: sectionTabStyle(section === 'retention') }, 'Retention'),
@@ -1521,7 +1559,15 @@ function PromotionPlanner({ user }) {
           'div',
           { style: labelCellStyle, title: name },
           e('div', { style: { fontSize: '0.875rem', fontWeight: 600, color: PURPLE_DARK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, name),
-          e('div', { style: { marginTop: '0.25rem' } }, e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, cfg.getStage(item)))
+          e(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.25rem' } },
+            cfg.getKind && (() => {
+              const kind = cfg.getKind(item);
+              return kind && e('span', { style: { fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: kind.bg, color: kind.color, fontWeight: 600 } }, kind.label);
+            })(),
+            e('span', { style: { fontSize: '0.75rem', padding: '0.125rem 0.5rem', borderRadius: '999px', background: 'var(--surface-alt)', color: 'var(--text-secondary)' } }, cfg.getStage(item))
+          )
         ),
         e(
           'div',
@@ -1577,6 +1623,24 @@ function PromotionPlanner({ user }) {
       ),
       e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, cfg.footerNote)
     );
+  }
+
+  let overviewSection = null;
+  if (section === 'overview') {
+    overviewSection = renderTimelineSection({
+      items: rollupItems,
+      getDates: (it) => it.dates,
+      getName: (it) => it.name,
+      getStage: (it) => it.stage,
+      getKind: (it) => ROLLUP_KINDS[it.kind],
+      onOpenItem: (it) => it.onOpen(),
+      prepLabel: 'Prep / build',
+      liveLabel: 'Live (some estimated at 14 days where no end date is set)',
+      launchTitle: 'Starts',
+      endTitle: 'Ends',
+      emptyLabel: 'Nothing scheduled yet.',
+      footerNote: 'Everything across Promotions, Emails, Paid Media, and CRO/UX in one place. Click a row to open it where it lives.',
+    });
   }
 
   let timelineSection = null;
@@ -2000,6 +2064,7 @@ function PromotionPlanner({ user }) {
     header,
     sectionTabs,
     subTabs,
+    overviewSection,
     boardSection,
     timelineSection,
     emailsSection,

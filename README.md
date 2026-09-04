@@ -3,6 +3,10 @@
 A shared planning tool for the Acquisition, Retention, and Website teams.
 Navigation is organized by team:
 
+- **Overview** — a unified, read-only timeline rolling up every
+  promotion, email, paid media test, and CRO/UX test into one
+  chronological view, each row tagged with a team-colored badge. Click a
+  row to jump to it in its own section.
 - **Promotions** — cross-team, since every promotion involves all three
   teams: a kanban board (briefing through launch to results reporting)
   and a timeline.
