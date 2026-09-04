@@ -17,7 +17,10 @@ top-level tab:
   by kind (Promotion/Email/Paid Media/CRO-UX) and by assignee — for a
   promotion, the assignee filter matches if any of its tasks are
   assigned to that person, since a promotion itself has no single
-  assignee.
+  assignee. Any combination of search/kind/assignee can be named and
+  saved ("+ Save current view") for one-click recall later, instead of
+  resetting it each time — saved per-browser (like the theme choice
+  below), not shared with the team.
 - **Stats** — a handful of headline numbers read straight off the boards
   below: promotions live/in prep/archived, each test tracker's win rate
   (Win vs. Loss only — TBD/Inconclusive don't count either way) plus how

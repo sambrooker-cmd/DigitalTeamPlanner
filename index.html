@@ -754,6 +754,26 @@ function useTheme() {
   return [theme, setTheme];
 }
 
+// Saved Overview filter combos — a personal convenience (like the theme choice), so
+// per-browser in localStorage rather than a shared Firestore collection everyone would see.
+const SAVED_VIEWS_KEY = 'overviewSavedViews';
+function useSavedViews() {
+  const [views, setViews] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SAVED_VIEWS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) { return []; }
+  });
+  function persist(next) {
+    setViews(next);
+    try { localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next)); } catch (err) {}
+  }
+  function saveView(view) { persist([...views, view]); }
+  function deleteView(id) { persist(views.filter((v) => v.id !== id)); }
+  return { views, saveView, deleteView };
+}
+
 const MOBILE_QUERY = '(max-width: 720px)';
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.matchMedia(MOBILE_QUERY).matches : false));
@@ -1368,6 +1388,9 @@ function PromotionPlanner({ user }) {
   const [overviewSearch, setOverviewSearch] = useState('');
   const [overviewKinds, setOverviewKinds] = useState(new Set());
   const [overviewAssignee, setOverviewAssignee] = useState('');
+  const { views: savedViews, saveView, deleteView } = useSavedViews();
+  const [savingView, setSavingView] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
   const [activeFilters, setActiveFilters] = useState(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState(null);
   const [taskModal, setTaskModal] = useState(false);
@@ -2603,6 +2626,20 @@ function PromotionPlanner({ user }) {
     });
     const filtersActive = !!(overviewSearch || overviewKinds.size > 0 || overviewAssignee);
 
+    function applySavedView(view) {
+      setOverviewSearch(view.search || '');
+      setOverviewKinds(new Set(view.kinds || []));
+      setOverviewAssignee(view.assignee || '');
+    }
+
+    function saveCurrentView() {
+      const trimmed = newViewName.trim();
+      if (!trimmed) return;
+      saveView({ id: genId(), name: trimmed, search: overviewSearch, kinds: Array.from(overviewKinds), assignee: overviewAssignee });
+      setNewViewName('');
+      setSavingView(false);
+    }
+
     const filterBar = e(
       'div',
       { style: { padding: isMobile ? '1.5rem 1rem 0' : '1.5rem 2rem 0', display: 'flex', flexDirection: 'column', gap: '0.75rem' } },
@@ -2635,6 +2672,42 @@ function PromotionPlanner({ user }) {
           onClick: () => { setOverviewSearch(''); setOverviewKinds(new Set()); setOverviewAssignee(''); },
           style: { fontSize: '0.75rem', padding: '0.375rem 0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' },
         }, 'Clear filters')
+      ),
+      (savedViews.length > 0 || filtersActive) && e(
+        'div',
+        { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem' } },
+        savedViews.length > 0 && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saved:'),
+        savedViews.map((v) => e(
+          'span',
+          {
+            key: v.id,
+            style: { display: 'inline-flex', alignItems: 'center', gap: '0.125rem', fontSize: '0.75rem', padding: '0.1875rem 0.25rem 0.1875rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)' },
+          },
+          e('button', { onClick: () => applySavedView(v), style: { background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', font: 'inherit', padding: 0 } }, v.name),
+          e('button', {
+            onClick: () => deleteView(v.id),
+            title: `Delete "${v.name}"`,
+            style: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.875rem', lineHeight: 1, padding: '0 0.375rem' },
+          }, '×')
+        )),
+        !savingView && filtersActive && e('button', {
+          onClick: () => { setSavingView(true); setNewViewName(''); },
+          style: { fontSize: '0.75rem', padding: '0.1875rem 0.75rem', color: PURPLE_TEXT, background: 'none', border: `1px dashed ${PURPLE}`, borderRadius: '999px', cursor: 'pointer' },
+        }, '+ Save current view'),
+        savingView && e(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: '0.375rem' } },
+          e('input', {
+            autoFocus: true,
+            value: newViewName,
+            onChange: (ev) => setNewViewName(ev.target.value),
+            onKeyDown: (ev) => { if (ev.key === 'Enter') saveCurrentView(); else if (ev.key === 'Escape') setSavingView(false); },
+            placeholder: 'Name this view…',
+            style: { ...inputStyle, width: 'auto', maxWidth: '10rem', fontSize: '0.75rem', padding: '0.25rem 0.5rem' },
+          }),
+          e('button', { onClick: saveCurrentView, style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.375rem', background: PURPLE, color: 'var(--on-accent)', border: 'none', cursor: 'pointer' } }, 'Save'),
+          e('button', { onClick: () => setSavingView(false), style: { fontSize: '0.75rem', padding: '0.25rem 0.5rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Cancel')
+        )
       )
     );
 
