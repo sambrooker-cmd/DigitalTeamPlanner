@@ -37,7 +37,9 @@ top-level tab:
   - **Acquisition** — Paid Media Tests: a status board and a timeline.
   - **Retention** — Emails: a status board and a month calendar.
   - **Website** — CRO/UX Tests: a status board and a timeline.
-- **Activity** — a live change log across everything above.
+- **Activity** — a live change log across everything above, plus a
+  **Recently Deleted** sub-view for restoring (or permanently deleting)
+  anything soft-deleted — see below.
 
 The header also has a **search box** that reaches everything at once —
 promotions, individual tasks, emails, and both test trackers — regardless
@@ -69,9 +71,14 @@ pushed to them outside the app yet. Each edit screen also has an
 (10MB cap), shown as a thumbnail for images or a filename link otherwise,
 with size/uploader/date; only the person who uploaded a file can delete it.
 Deleting a promotion, task, email, or
-test shows an **Undo** on its toast for a few seconds — the record isn't
-actually removed from Firestore until that window passes, so Undo is exact,
-not a re-creation. Each of those edit screens also has a collapsed
+test shows an **Undo** on its toast for a few seconds — nothing changes in
+Firestore until that window passes, so Undo is exact, not a re-creation.
+After that window, the record is only *soft*-deleted (hidden everywhere,
+but not actually removed) and lands in **Recently Deleted**, a sub-view of
+the Activity tab, where it stays indefinitely — Restore brings it straight
+back exactly as it was; Delete forever removes it for good and can't be
+undone. Deleting a promotion this way doesn't touch its tasks, so restoring
+it brings all of them straight back too. Each of those edit screens also has a collapsed
 **History** section — that item's own slice of the Activity log, so you
 don't have to scroll the full log to see what happened to just this one
 (starts from when this shipped; older activity wasn't tagged with an item
@@ -300,6 +307,13 @@ removing the attachment's metadata doc, which is what the app actually
 reads.
 
 ### Data model
+
+Every document type below that can be deleted from the board (promotions,
+tasks, emails, both test trackers) also carries three optional soft-delete
+fields — `deleted` (boolean), `deletedAt`, `deletedBy` — set when someone
+deletes it and cleared entirely on Restore. A document without them has
+simply never been deleted; nothing is backfilled or required at creation
+time. See "Recently Deleted" above for the UI this powers.
 
 - `promotions/{promoId}` — one document per promotion (`name`, `launchDate`,
   `endDate` (optional), `description`, `archived` (boolean), plus
