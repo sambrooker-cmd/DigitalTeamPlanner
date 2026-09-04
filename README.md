@@ -247,7 +247,14 @@ service cloud.firestore {
 
     match /emails/{emailId} {
       allow read: if isAllowed();
-      allow write: if isEditor();
+      // Same as any other write, except moving status *into* 'Approved' also requires
+      // isAdmin() — matches the app's own gate (only Admins can approve an email) but
+      // enforced server-side too, not just by hiding the option in the UI. Editing an
+      // already-approved email's other fields, or moving it back out of Approved, doesn't
+      // need Admin — only the transition into Approved does.
+      allow create: if isEditor() && (request.resource.data.status != 'Approved' || isAdmin());
+      allow update: if isEditor() && (request.resource.data.status != 'Approved' || resource.data.status == 'Approved' || isAdmin());
+      allow delete: if isEditor();
       match /comments/{commentId} {
         allow read: if isAllowed();
         allow create: if isEditor();
@@ -410,8 +417,11 @@ time. See "Recently Deleted" above for the UI this powers.
   it's purely a single `isMainBanner: true` flag, visually called out
   wherever promotions appear (the promotion picker, the Promotions
   timeline, the Overview timeline) with a small "Main banner" badge and
-  one shade bolder color (`PURPLE_DARK` where a regular promotion's bar
-  is `PURPLE`), same accent family throughout rather than a new color.
+  a solid `PURPLE` bar throughout where a regular promotion's bar fades
+  from `PURPLE_LIGHT` to `PURPLE`, same accent family throughout rather
+  than a new color (deliberately not `PURPLE_DARK`, which is a
+  theme-adaptive text color, not a fixed bold swatch — it goes light in
+  dark mode and would make white badge text illegible on it).
   "Set as main banner" / "Remove as main banner" on a promotion's edit
   screen is the only way to change it, and setting it on one promotion
   automatically clears it from whichever one held it before — the app
@@ -428,13 +438,30 @@ time. See "Recently Deleted" above for the UI this powers.
   `relatedPromoId` (optional, links it to a promotion), `briefDocLink`
   (optional — the brief/creative doc, kept separate from `hubspotLink`
   since briefing usually starts before HubSpot is even touched),
-  `hubspotLink` (optional), `notes`, plus the same attribution fields).
+  `hubspotLink` (optional), `approvedBy`/`approvedAt` (optional, see
+  below), `notes`, plus the same attribution fields).
   Shown under the **Retention** section as a status board (drag between
   columns) or a month calendar (click a day to add one, click a chip to
   edit it).
   This is where the email team's planning calendar and Trello-style
   briefing status live — HubSpot itself stays the tool that builds and
   sends the email; `hubspotLink` just points at it.
+
+  Moving an email's status to **Approved** — via the Status dropdown or
+  by dragging its card into the Approved column — is restricted to
+  Admins, both in the UI (the option is disabled/the drop is rejected
+  with a toast for anyone else) and server-side in the Firestore rules
+  above, so it can't be bypassed from devtools or a stale tab. The
+  moment it happens, the app stamps `approvedBy` (the Admin's name) and
+  `approvedAt` (a server timestamp) onto the document automatically —
+  no extra step — shown as "✓ Approved by [name]" on the email's card
+  and in its edit screen, and logged to the Activity feed
+  (`email_approved`) for a running history even after a later
+  re-approval overwrites the fields on the doc itself. Moving it back
+  out of Approved (e.g. to make a further change) clears both fields —
+  they always reflect the *current* sign-off, not a stale one — and
+  that clear/any other edit to an already-approved email doesn't need
+  Admin, only the transition into Approved does.
 
   For a send that repeats on a cadence (a weekly newsletter, a monthly
   loyalty email), **Repeat next week** / **Repeat next month** sit next to

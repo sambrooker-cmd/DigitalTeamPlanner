@@ -235,6 +235,7 @@ const ACTION_LABELS = {
   email_created: 'created email',
   email_updated: 'edited email',
   email_moved: 'moved email',
+  email_approved: 'approved email',
   email_rescheduled: 'rescheduled email',
   email_deleted: 'deleted email',
   email_restored: 'restored email',
@@ -2109,6 +2110,8 @@ function PromotionPlanner({ user }) {
       { label: 'Related promotion', get: (em) => { const p = em.relatedPromoId ? promotions.find((pr) => pr.id === em.relatedPromoId) : null; return p ? p.name : ''; } },
       { label: 'Brief doc link', get: (em) => em.briefDocLink || '' },
       { label: 'HubSpot link', get: (em) => em.hubspotLink || '' },
+      { label: 'Approved by', get: (em) => em.approvedBy || '' },
+      { label: 'Approved at', get: (em) => (em.approvedAt ? formatDateTime(em.approvedAt) : '') },
       { label: 'Notes', get: (em) => em.notes || '' },
     ]);
   }
@@ -2274,6 +2277,15 @@ function PromotionPlanner({ user }) {
   }
 
   // --- Email mutations: a flat top-level collection, no team dimension (like a task, not a promotion). ---
+  // Only admins can move an email into 'Approved' (enforced at the call sites below, not here —
+  // this just decides what to stamp once a transition is already known to be allowed). Moving
+  // back out of Approved clears the sign-off rather than leaving a stale approver on record.
+  function emailApprovalPatch(newStatus, oldStatus) {
+    if (newStatus === 'Approved' && oldStatus !== 'Approved') return { approvedBy: actorName, approvedAt: serverTimestamp() };
+    if (newStatus !== 'Approved' && oldStatus === 'Approved') return { approvedBy: deleteField(), approvedAt: deleteField() };
+    return {};
+  }
+
   async function addEmail(data) {
     setBusy(true);
     try {
@@ -2284,11 +2296,11 @@ function PromotionPlanner({ user }) {
     } finally { setBusy(false); }
   }
 
-  async function saveExistingEmail(emailId, data) {
+  async function saveExistingEmail(emailId, data, action) {
     setBusy(true);
     try {
       await updateDoc(doc(fdb, 'emails', emailId), { ...data, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'email_updated', emailId, taskTitle: data.subject });
+      await logActivity({ action: action || 'email_updated', emailId, taskTitle: data.subject });
     } finally { setBusy(false); }
   }
 
@@ -2316,9 +2328,10 @@ function PromotionPlanner({ user }) {
   }
 
   async function moveEmail(emailId, subject, status, fromStatus) {
+    const justApproved = status === 'Approved' && fromStatus !== 'Approved';
     try {
-      await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
-      await logActivity({ action: 'email_moved', emailId, taskTitle: subject, detail: `${fromStatus} → ${status}` });
+      await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp(), ...emailApprovalPatch(status, fromStatus) });
+      await logActivity({ action: justApproved ? 'email_approved' : 'email_moved', emailId, taskTitle: subject, detail: `${fromStatus} → ${status}` });
     } catch (err) { pushToast('Could not move this email: ' + err.message); }
   }
 
@@ -2375,9 +2388,18 @@ function PromotionPlanner({ user }) {
       return;
     }
     const { id, subject, sendDate, status, assignee, relatedPromoId, segment, previewText, cta, briefDocLink, hubspotLink, notes } = emailForm;
-    const data = { subject, sendDate, status, assignee, relatedPromoId, segment: segment || '', previewText: previewText || '', cta: cta || '', briefDocLink: briefDocLink || '', hubspotLink, notes };
+    const existing = id ? (emails || []).find((em) => em.id === id) : null;
+    const fromStatus = existing ? existing.status : null;
+    if (status === 'Approved' && fromStatus !== 'Approved' && !isAdmin) {
+      pushToast('Only admins can approve emails.');
+      return;
+    }
+    const data = {
+      subject, sendDate, status, assignee, relatedPromoId, segment: segment || '', previewText: previewText || '', cta: cta || '', briefDocLink: briefDocLink || '', hubspotLink, notes,
+      ...emailApprovalPatch(status, fromStatus),
+    };
     try {
-      if (id) await saveExistingEmail(id, data);
+      if (id) await saveExistingEmail(id, data, status === 'Approved' && fromStatus !== 'Approved' ? 'email_approved' : undefined);
       else await addEmail(data);
     } catch (err) {
       pushToast('Could not save this email: ' + err.message);
@@ -2398,7 +2420,10 @@ function PromotionPlanner({ user }) {
   function handleEmailDrop(status) {
     if (!draggedEmailId) return;
     const email = (emails || []).find((em) => em.id === draggedEmailId);
-    if (email && email.status !== status) moveEmail(email.id, email.subject, status, email.status);
+    if (email && email.status !== status) {
+      if (status === 'Approved' && !isAdmin) pushToast('Only admins can approve emails.');
+      else moveEmail(email.id, email.subject, status, email.status);
+    }
     setDraggedEmailId(null);
   }
 
@@ -3705,7 +3730,8 @@ function PromotionPlanner({ user }) {
           e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, email.assignee || 'Unassigned'),
           e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, formatDate(email.sendDate))
         ),
-        promo && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `🔗 ${promo.name}`)
+        promo && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `🔗 ${promo.name}`),
+        email.approvedBy && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `✓ Approved by ${email.approvedBy}`)
       );
     }
 
@@ -4114,7 +4140,7 @@ function PromotionPlanner({ user }) {
           'div',
           { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
           e(Field, { label: 'Send date', required: true }, e('input', { type: 'date', style: inputStyle, value: emailForm.sendDate, onChange: (ev) => setEmailForm({ ...emailForm, sendDate: ev.target.value }) })),
-          e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: emailForm.status, onChange: (ev) => setEmailForm({ ...emailForm, status: ev.target.value }) }, EMAIL_STATUSES.map((s) => e('option', { key: s, value: s }, s))))
+          e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: emailForm.status, onChange: (ev) => setEmailForm({ ...emailForm, status: ev.target.value }) }, EMAIL_STATUSES.map((s) => e('option', { key: s, value: s, disabled: s === 'Approved' && !isAdmin }, s === 'Approved' && !isAdmin ? 'Approved (admin only)' : s))))
         ),
         e(
           'div',
@@ -4138,7 +4164,8 @@ function PromotionPlanner({ user }) {
           'p',
           { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
           `Created by ${emailForm.createdBy || 'unknown'}${emailForm.createdAt ? ' · ' + formatDateTime(emailForm.createdAt) : ''}`,
-          emailForm.updatedBy && e('span', null, e('br'), `Last edited by ${emailForm.updatedBy}${emailForm.updatedAt ? ' · ' + formatDateTime(emailForm.updatedAt) : ''}`)
+          emailForm.updatedBy && e('span', null, e('br'), `Last edited by ${emailForm.updatedBy}${emailForm.updatedAt ? ' · ' + formatDateTime(emailForm.updatedAt) : ''}`),
+          emailForm.approvedBy && e('span', { style: { color: PURPLE_TEXT } }, e('br'), `✓ Approved by ${emailForm.approvedBy}${emailForm.approvedAt ? ' · ' + formatDateTime(emailForm.approvedAt) : ''}`)
         ),
         e(
           'div',
