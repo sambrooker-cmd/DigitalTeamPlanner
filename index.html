@@ -353,11 +353,16 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, required, children }) {
   return e(
     'div',
     { style: { marginBottom: '0.75rem' } },
-    e('label', { style: { display: 'block', fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.25rem' } }, label),
+    e(
+      'label',
+      { style: { display: 'block', fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.25rem' } },
+      label,
+      required && e('span', { style: { color: 'var(--danger)' } }, ' *')
+    ),
     children
   );
 }
@@ -928,7 +933,7 @@ function PromotionPlanner({ user }) {
     try {
       await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...patch, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'task_moved', promoId, promoName, taskTitle, detail: `${fromStatus} → ${patch.status}` });
-    } catch (err) {}
+    } catch (err) { window.alert('Could not move this task: ' + err.message); }
   }
 
   async function createPromotion(data) {
@@ -1000,7 +1005,7 @@ function PromotionPlanner({ user }) {
     try {
       await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'email_moved', taskTitle: subject, detail: `${fromStatus} → ${status}` });
-    } catch (err) {}
+    } catch (err) { window.alert('Could not move this email: ' + err.message); }
   }
 
   function openNewEmail(status, sendDate) {
@@ -1014,7 +1019,10 @@ function PromotionPlanner({ user }) {
   }
 
   async function saveEmail() {
-    if (!emailForm.subject.trim() || !emailForm.sendDate) return;
+    if (!emailForm.subject.trim() || !emailForm.sendDate) {
+      window.alert('Subject and send date are required.');
+      return;
+    }
     const { id, subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes } = emailForm;
     const data = { subject, sendDate, status, assignee, relatedPromoId, hubspotLink, notes };
     try {
@@ -1083,7 +1091,7 @@ function PromotionPlanner({ user }) {
     try {
       await updateDoc(doc(fdb, collectionName, id), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
       await logActivity({ action: 'test_moved', taskTitle: name, promoName: label, detail: `${fromStatus} → ${status}` });
-    } catch (err) {}
+    } catch (err) { window.alert('Could not move this test: ' + err.message); }
   }
 
   function openNewTest(config, status) {
@@ -1100,7 +1108,10 @@ function PromotionPlanner({ user }) {
 
   async function saveTest() {
     const config = findTrackerConfig(testForm.__collection);
-    if (!testForm.name || !testForm.name.trim() || !testForm.startDate) return;
+    if (!testForm.name || !testForm.name.trim() || !testForm.startDate) {
+      window.alert('Test name and start date are required.');
+      return;
+    }
     const data = { status: testForm.status };
     config.fields.forEach((f) => { data[f.key] = testForm[f.key] || ''; });
     try {
@@ -1179,7 +1190,11 @@ function PromotionPlanner({ user }) {
   }
 
   async function saveTask() {
-    if (!taskForm.title.trim() || !activePromo) return;
+    if (!activePromo) return;
+    if (!taskForm.title.trim()) {
+      window.alert(taskForm.status === 'Reports' ? 'A result headline is required.' : 'A task title is required.');
+      return;
+    }
     // Only the fields the form actually edits — never forward whatever else happens to be
     // sitting on taskForm (e.g. createdBy/createdAt, which older tasks may not have at all).
     const { id, team, type, title, assignee, due, status, notes } = taskForm;
@@ -1195,9 +1210,15 @@ function PromotionPlanner({ user }) {
     setTaskForm(null);
   }
 
-  function deleteTaskClick() {
-    if (!activePromo) return;
-    removeTask(activePromo.id, activePromo.name, taskForm.id, taskForm.title);
+  async function deleteTaskClick() {
+    if (!activePromo || !taskForm.id) return;
+    if (!window.confirm(`Delete "${taskForm.title}"? This can't be undone.`)) return;
+    try {
+      await removeTask(activePromo.id, activePromo.name, taskForm.id, taskForm.title);
+    } catch (err) {
+      window.alert('Could not delete this task: ' + err.message);
+      return;
+    }
     setTaskModal(false);
     setTaskForm(null);
   }
@@ -1222,7 +1243,10 @@ function PromotionPlanner({ user }) {
   }
 
   async function savePromo() {
-    if (!promoForm.name.trim() || !promoForm.launchDate) return;
+    if (!promoForm.name.trim() || !promoForm.launchDate) {
+      window.alert('Promotion name and launch date are required.');
+      return;
+    }
     // Only the fields the form actually edits — never forward whatever else happens to be
     // sitting on promoForm (e.g. createdBy/createdAt, which older promotions may not have).
     const { id, name, launchDate, endDate, description } = promoForm;
@@ -2124,7 +2148,7 @@ function PromotionPlanner({ user }) {
       { title: taskForm.id ? 'Edit task' : 'New task', onClose: () => { setTaskModal(false); setTaskForm(null); } },
       e(Field, { label: 'Team' }, e('select', { style: inputStyle, value: taskForm.team, onChange: (ev) => setTaskForm({ ...taskForm, team: ev.target.value }) }, TEAMS.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
       e(Field, { label: 'Activity type' }, e('select', { style: inputStyle, value: taskForm.type, onChange: (ev) => setTaskForm({ ...taskForm, type: ev.target.value }) }, TYPES.map((t) => e('option', { key: t.id, value: t.id }, t.label)))),
-      e(Field, { label: taskForm.status === 'Reports' ? 'Result headline' : 'Task' }, e('input', { style: inputStyle, value: taskForm.title, onChange: (ev) => setTaskForm({ ...taskForm, title: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'e.g. Conversion rate 4.1 percent' : 'e.g. Brief paid social creative' })),
+      e(Field, { label: taskForm.status === 'Reports' ? 'Result headline' : 'Task', required: true }, e('input', { style: inputStyle, value: taskForm.title, onChange: (ev) => setTaskForm({ ...taskForm, title: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'e.g. Conversion rate 4.1 percent' : 'e.g. Brief paid social creative' })),
       e(
         'div',
         { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
@@ -2153,11 +2177,11 @@ function PromotionPlanner({ user }) {
     promoModalEl = e(
       Modal,
       { title: promoForm.id ? 'Edit promotion' : 'New promotion', onClose: () => { setPromoModal(false); setPromoForm(null); } },
-      e(Field, { label: 'Promotion name' }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
+      e(Field, { label: 'Promotion name', required: true }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
       e(
         'div',
         { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Launch date' }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
+        e(Field, { label: 'Launch date', required: true }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
         e(Field, { label: 'End date (optional)' }, e('input', { type: 'date', style: inputStyle, min: promoForm.launchDate || undefined, value: promoForm.endDate || '', onChange: (ev) => setPromoForm({ ...promoForm, endDate: ev.target.value }) }))
       ),
       e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
@@ -2185,11 +2209,11 @@ function PromotionPlanner({ user }) {
     emailModalEl = e(
       Modal,
       { title: emailForm.id ? 'Edit email' : 'New email', onClose: () => { setEmailModal(false); setEmailForm(null); } },
-      e(Field, { label: 'Subject' }, e('input', { style: inputStyle, value: emailForm.subject, onChange: (ev) => setEmailForm({ ...emailForm, subject: ev.target.value }), placeholder: 'e.g. This week: cabin upgrade offers' })),
+      e(Field, { label: 'Subject', required: true }, e('input', { style: inputStyle, value: emailForm.subject, onChange: (ev) => setEmailForm({ ...emailForm, subject: ev.target.value }), placeholder: 'e.g. This week: cabin upgrade offers' })),
       e(
         'div',
         { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
-        e(Field, { label: 'Send date' }, e('input', { type: 'date', style: inputStyle, value: emailForm.sendDate, onChange: (ev) => setEmailForm({ ...emailForm, sendDate: ev.target.value }) })),
+        e(Field, { label: 'Send date', required: true }, e('input', { type: 'date', style: inputStyle, value: emailForm.sendDate, onChange: (ev) => setEmailForm({ ...emailForm, sendDate: ev.target.value }) })),
         e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: emailForm.status, onChange: (ev) => setEmailForm({ ...emailForm, status: ev.target.value }) }, EMAIL_STATUSES.map((s) => e('option', { key: s, value: s }, s))))
       ),
       e(
@@ -2226,7 +2250,7 @@ function PromotionPlanner({ user }) {
     testModalEl = e(
       Modal,
       { title: testForm.id ? `Edit test` : `New test`, onClose: () => { setTestModal(false); setTestForm(null); } },
-      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users))),
+      ...config.fields.map((f) => e(Field, { key: f.key, label: f.label, required: f.required }, renderTestFieldInput(f, testForm[f.key], (v) => setTestForm({ ...testForm, [f.key]: v }), users))),
       e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: testForm.status, onChange: (ev) => setTestForm({ ...testForm, status: ev.target.value }) }, config.statuses.map((s) => e('option', { key: s, value: s }, s)))),
       testForm.id && e(
         'p',
