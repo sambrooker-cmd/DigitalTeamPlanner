@@ -57,6 +57,19 @@ Paid Media, and CRO/UX each have an **Export CSV** button (on the
 promotion's board, and by the "+ New…" button on the other three) for
 pulling the current data into a deck or report.
 
+For promotions that recur (Wave Season, Black Friday), any promotion's edit
+screen has a **Save as template** button that snapshots its task structure —
+which teams do what, with roughly what titles and who usually owns them, but
+no dates or statuses, since those only make sense for one specific launch.
+Starting a **new** promotion offers a "Start from a template" picker that
+pre-fills the name/description and recreates that task list (assignees
+carried over, due dates left blank for you to set) as soon as you save.
+Templates are managed from a "Manage templates" link on the Promotions
+board — rename or delete them there. They're a separate, lightweight
+collection: not shown in the timeline, Stats, Overview, or search, and they
+don't get comment threads or CSV export — a preset isn't a piece of tracked
+work.
+
 When something goes wrong (a save fails, a required field is missing), it
 shows up as a small dismissible notification in the bottom corner rather
 than a blocking browser alert — same information, just doesn't freeze the
@@ -163,6 +176,10 @@ service cloud.firestore {
       }
     }
 
+    match /promoTemplates/{templateId} {
+      allow read, write: if isAllowed();
+    }
+
     match /activity/{entryId} {
       allow read, write: if isAllowed();
     }
@@ -241,6 +258,11 @@ by these rules server-side, not just hidden in the UI.
   a duplicate kept in sync — editing it from the promotion's board or
   from its own team channel is the same write, so there's nothing that
   can drift out of sync between them.
+- `promoTemplates/{templateId}` — a reusable promotion preset (`name`,
+  `description`, `tasks` — an embedded array of `{team, type, title,
+  assignee}`, no dates or status, plus the usual attribution fields).
+  Not a promotion itself and not shown in the timeline, Stats, Overview,
+  or search — see "Save as template" above.
 - `.../comments/{commentId}` — a comment thread under any commentable item
   (`promotions/{promoId}/comments`, `promotions/{promoId}/tasks/{taskId}/comments`,
   `emails/{emailId}/comments`, `paidTests/{testId}/comments`,

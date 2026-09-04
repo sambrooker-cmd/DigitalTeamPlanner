@@ -230,6 +230,9 @@ const ACTION_LABELS = {
   test_updated: 'edited test',
   test_moved: 'moved test',
   test_deleted: 'deleted test',
+  template_created: 'saved a promotion as a template',
+  template_updated: 'renamed a promotion template',
+  template_deleted: 'deleted a promotion template',
 };
 
 const PURPLE = 'var(--accent)';
@@ -368,6 +371,49 @@ function Modal({ title, onClose, children }) {
       ),
       children
     )
+  );
+}
+
+// One row in TemplatesModal — local text state so a rename commits on blur/Enter, not on every
+// keystroke (that would be a Firestore write per character typed).
+function TemplateRow({ template, onRename, onDelete }) {
+  const [name, setName] = useState(template.name);
+  useEffect(() => { setName(template.name); }, [template.name]);
+  function commitRename() {
+    const trimmed = name.trim();
+    if (trimmed && trimmed !== template.name) onRename(template.id, trimmed);
+    else setName(template.name);
+  }
+  const taskCount = (template.tasks || []).length;
+  return e(
+    'div',
+    { style: { display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: '0.5rem' } },
+    e('input', {
+      style: { ...inputStyle, flex: 1 },
+      value: name,
+      onChange: (ev) => setName(ev.target.value),
+      onBlur: commitRename,
+      onKeyDown: (ev) => { if (ev.key === 'Enter') ev.currentTarget.blur(); },
+    }),
+    e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' } }, `${taskCount} task${taskCount === 1 ? '' : 's'}`),
+    e('button', {
+      onClick: () => onDelete(template.id, template.name),
+      style: { fontSize: '0.75rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 },
+    }, 'Delete')
+  );
+}
+
+function TemplatesModal({ templates, onClose, onRename, onDelete }) {
+  return e(
+    Modal,
+    { title: 'Promotion templates', onClose },
+    (!templates || templates.length === 0)
+      ? e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, "No templates yet — save one from a promotion's Edit screen.")
+      : e(
+          'div',
+          { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
+          templates.map((t) => e(TemplateRow, { key: t.id, template: t, onRename, onDelete }))
+        )
   );
 }
 
@@ -1022,6 +1068,7 @@ function PromotionPlanner({ user }) {
   const { docs: emails, error: emailsError } = useEmailsCollection();
   const { docs: paidTests, error: paidTestsError } = useCollectionDocs('paidTests', 'startDate');
   const { docs: croTests, error: croTestsError } = useCollectionDocs('croTests', 'startDate');
+  const { docs: promoTemplates, error: promoTemplatesError } = useCollectionDocs('promoTemplates', 'name');
 
   // Seed the store once, guarded by a transaction so concurrent first-openers don't double-seed.
   useEffect(() => {
@@ -1281,6 +1328,8 @@ function PromotionPlanner({ user }) {
   const [taskModal, setTaskModal] = useState(false);
   const [promoModal, setPromoModal] = useState(false);
   const [promoForm, setPromoForm] = useState(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [templatesModalOpen, setTemplatesModalOpen] = useState(false);
   const [taskForm, setTaskForm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [emailView, setEmailView] = useState('board');
@@ -1688,7 +1737,17 @@ function PromotionPlanner({ user }) {
 
   function openNewPromo() {
     setPromoForm({ id: null, name: '', launchDate: '', endDate: '', description: '' });
+    setSelectedTemplateId('');
     setPromoModal(true);
+  }
+
+  // Picking a template pre-fills name/description (still fully editable — a recurring
+  // promotion's name usually needs a year or date tacked on); the template's tasks aren't
+  // created until Save, since there's no promotion id to attach them to yet.
+  function applyTemplate(templateId) {
+    setSelectedTemplateId(templateId);
+    const tpl = (promoTemplates || []).find((t) => t.id === templateId);
+    if (tpl) setPromoForm((f) => ({ ...f, name: tpl.name, description: tpl.description || '' }));
   }
 
   function openEditPromo(promo) {
@@ -1703,6 +1762,48 @@ function PromotionPlanner({ user }) {
   function duplicatePromoClick() {
     if (!promoForm) return;
     setPromoForm({ id: null, name: `${promoForm.name} (copy)`, launchDate: '', endDate: '', description: promoForm.description || '' });
+    setSelectedTemplateId('');
+  }
+
+  // Snapshots the currently-open promotion's task structure (team/type/title/assignee — no
+  // dates or status, meaningless outside a specific launch) into a reusable template. A
+  // separate, lightweight collection so templates never show up in the timeline, Stats,
+  // Overview, or search — they're a preset, not a piece of tracked work.
+  async function saveAsTemplateClick() {
+    if (!promoForm.id || !activePromo) return;
+    setBusy(true);
+    try {
+      const tasks = (activePromo.tasks || []).map((t) => ({ team: t.team, type: t.type, title: t.title, assignee: t.assignee || '' }));
+      await addDoc(collection(fdb, 'promoTemplates'), {
+        name: promoForm.name, description: promoForm.description || '', tasks,
+        createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+      });
+      await logActivity({ action: 'template_created', promoName: promoForm.name });
+      pushToast(`Saved "${promoForm.name}" as a template.`, 'info');
+    } catch (err) {
+      pushToast('Could not save this as a template: ' + err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function renameTemplateClick(templateId, newName) {
+    try {
+      await updateDoc(doc(fdb, 'promoTemplates', templateId), { name: newName, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'template_updated', promoName: newName });
+    } catch (err) {
+      pushToast('Could not rename this template: ' + err.message);
+    }
+  }
+
+  async function deleteTemplateClick(templateId, templateName) {
+    if (!window.confirm(`Delete the "${templateName}" template? This can't be undone.`)) return;
+    try {
+      await deleteDoc(doc(fdb, 'promoTemplates', templateId));
+      await logActivity({ action: 'template_deleted', promoName: templateName });
+    } catch (err) {
+      pushToast('Could not delete this template: ' + err.message);
+    }
   }
 
   async function savePromo() {
@@ -1724,6 +1825,12 @@ function PromotionPlanner({ user }) {
       } else {
         const newId = await createPromotion(data);
         setActivePromoId(newId);
+        const tpl = selectedTemplateId ? (promoTemplates || []).find((t) => t.id === selectedTemplateId) : null;
+        if (tpl) {
+          for (const t of tpl.tasks || []) {
+            await addTask(newId, name, { team: t.team, type: t.type, title: t.title, assignee: t.assignee || '', due: '', status: STATUSES[0], notes: '' });
+          }
+        }
       }
     } catch (err) {
       pushToast('Could not save this promotion: ' + err.message);
@@ -1731,6 +1838,7 @@ function PromotionPlanner({ user }) {
     }
     setPromoModal(false);
     setPromoForm(null);
+    setSelectedTemplateId('');
   }
 
   async function deletePromoClick() {
@@ -2021,6 +2129,15 @@ function PromotionPlanner({ user }) {
           style: { flexShrink: 0, alignSelf: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
         },
         showArchived ? 'Hide archived' : `Show archived (${archivedCount})`
+      ),
+      e(
+        'button',
+        {
+          key: 'manage-templates',
+          onClick: () => setTemplatesModalOpen(true),
+          style: { flexShrink: 0, alignSelf: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
+        },
+        `Manage templates${promoTemplates && promoTemplates.length > 0 ? ` (${promoTemplates.length})` : ''}`
       )
     );
 
@@ -2840,7 +2957,13 @@ function PromotionPlanner({ user }) {
   if (promoModal && promoForm) {
     promoModalEl = e(
       Modal,
-      { title: promoForm.id ? 'Edit promotion' : 'New promotion', onClose: () => { setPromoModal(false); setPromoForm(null); } },
+      { title: promoForm.id ? 'Edit promotion' : 'New promotion', onClose: () => { setPromoModal(false); setPromoForm(null); setSelectedTemplateId(''); } },
+      !promoForm.id && promoTemplates && promoTemplates.length > 0 && e(Field, { label: 'Start from a template (optional)' }, e(
+        'select',
+        { style: inputStyle, value: selectedTemplateId, onChange: (ev) => applyTemplate(ev.target.value) },
+        e('option', { value: '' }, 'Start blank'),
+        promoTemplates.map((t) => e('option', { key: t.id, value: t.id }, `${t.name} (${(t.tasks || []).length} task${(t.tasks || []).length === 1 ? '' : 's'})`))
+      )),
       e(Field, { label: 'Promotion name', required: true }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
       e(
         'div',
@@ -2859,8 +2982,9 @@ function PromotionPlanner({ user }) {
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
         promoForm.id ? e(
           'div',
-          { style: { display: 'flex', gap: '1rem' } },
+          { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
           e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+          e('button', { onClick: saveAsTemplateClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Save as template'),
           e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
           e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
         ) : e('span'),
@@ -2952,6 +3076,7 @@ function PromotionPlanner({ user }) {
     emailsError && 'emails',
     paidTestsError && 'paid media tests',
     croTestsError && 'CRO/UX tests',
+    promoTemplatesError && 'promotion templates',
     usersError && 'the team directory',
     Object.keys(taskErrors).length > 0 && (Object.keys(taskErrors).length === 1 ? 'one promotion\'s tasks' : `${Object.keys(taskErrors).length} promotions' tasks`),
   ].filter(Boolean);
@@ -2981,6 +3106,7 @@ function PromotionPlanner({ user }) {
     promoModalEl,
     emailModalEl,
     testModalEl,
+    templatesModalOpen && e(TemplatesModal, { templates: promoTemplates || [], onClose: () => setTemplatesModalOpen(false), onRename: renameTemplateClick, onDelete: deleteTemplateClick }),
     e(ToastStack, { toasts, onDismiss: dismissToast })
   );
 }
