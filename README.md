@@ -90,37 +90,51 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email));
     }
 
+    function isCommentAuthor() {
+      return isAllowed() && request.auth.token.email == resource.data.byEmail;
+    }
+
     match /promotions/{promoId} {
       allow read, write: if isAllowed();
       match /tasks/{taskId} {
         allow read, write: if isAllowed();
         match /comments/{commentId} {
-          allow read, write: if isAllowed();
+          allow read, create: if isAllowed();
+          allow update: if false;
+          allow delete: if isCommentAuthor();
         }
       }
       match /comments/{commentId} {
-        allow read, write: if isAllowed();
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isCommentAuthor();
       }
     }
 
     match /emails/{emailId} {
       allow read, write: if isAllowed();
       match /comments/{commentId} {
-        allow read, write: if isAllowed();
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isCommentAuthor();
       }
     }
 
     match /paidTests/{testId} {
       allow read, write: if isAllowed();
       match /comments/{commentId} {
-        allow read, write: if isAllowed();
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isCommentAuthor();
       }
     }
 
     match /croTests/{testId} {
       allow read, write: if isAllowed();
       match /comments/{commentId} {
-        allow read, write: if isAllowed();
+        allow read, create: if isAllowed();
+        allow update: if false;
+        allow delete: if isCommentAuthor();
       }
     }
 

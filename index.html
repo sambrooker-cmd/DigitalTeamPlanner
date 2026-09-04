@@ -489,7 +489,9 @@ function rowsToCSV(rows, columns) {
 }
 
 function downloadCSV(filename, rows, columns) {
-  const blob = new Blob([rowsToCSV(rows, columns)], { type: 'text/csv;charset=utf-8;' });
+  // Leading BOM so Excel on Windows renders "£" and accented names correctly instead of
+  // mojibake — without it, Excel guesses the file's encoding instead of trusting UTF-8.
+  const blob = new Blob(['﻿' + rowsToCSV(rows, columns)], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -808,6 +810,14 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
   const { comments, error } = useComments(pathSegments);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const listRef = useRef(null);
+  const commentCount = comments ? comments.length : 0;
+
+  // Keep the newest comment in view — otherwise posting one while the thread is scrolled up
+  // (or just opening a long thread) leaves it out of sight in the fixed-height scroll box.
+  useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [commentCount]);
 
   async function submit() {
     if (!text.trim() || busy) return;
@@ -840,7 +850,7 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
     comments && comments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No comments yet.'),
     comments && comments.length > 0 && e(
       'div',
-      { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
+      { ref: listRef, style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
       comments.map((c) => e(
         'div',
         { key: c.id, style: { fontSize: '0.8125rem', background: 'var(--surface-alt)', borderRadius: '0.5rem', padding: '0.5rem 0.625rem' } },
@@ -859,18 +869,19 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
     ),
     e(
       'div',
-      { style: { display: 'flex', gap: '0.5rem' } },
-      e('input', {
-        style: { ...inputStyle, flex: 1 },
+      { style: { display: 'flex', gap: '0.5rem', alignItems: 'flex-end' } },
+      e('textarea', {
+        style: { ...inputStyle, flex: 1, minHeight: '2.25rem', resize: 'vertical' },
+        rows: 2,
         value: text,
-        placeholder: 'Add a comment…',
+        placeholder: 'Add a comment… (Shift+Enter for a new line)',
         onChange: (ev) => setText(ev.target.value),
-        onKeyDown: (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } },
+        onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } },
       }),
       e('button', {
         onClick: submit,
         disabled: busy,
-        style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 },
+        style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1, flexShrink: 0 },
       }, 'Post')
     )
   );
