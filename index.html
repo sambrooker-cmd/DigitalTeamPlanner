@@ -479,18 +479,21 @@ function useAuthUser() {
   return user;
 }
 
-function useAllowed(email) {
-  const [allowed, setAllowed] = useState(null); // null = checking
+// 'checking' | 'allowed' | 'denied' | 'error' — kept as a distinct status rather than a
+// checking/allowed boolean so a transient failure to even read the allowlist (offline, a rules
+// problem) doesn't look identical to "actually not on the list."
+function useAllowed(email, retryKey) {
+  const [status, setStatus] = useState({ state: 'checking', message: null });
   useEffect(() => {
-    if (!email) { setAllowed(null); return; }
+    if (!email) { setStatus({ state: 'checking', message: null }); return; }
     let cancelled = false;
-    setAllowed(null);
+    setStatus({ state: 'checking', message: null });
     getDoc(doc(fdb, 'allowlist', email))
-      .then((snap) => { if (!cancelled) setAllowed(snap.exists()); })
-      .catch(() => { if (!cancelled) setAllowed(false); });
+      .then((snap) => { if (!cancelled) setStatus({ state: snap.exists() ? 'allowed' : 'denied', message: null }); })
+      .catch((err) => { if (!cancelled) setStatus({ state: 'error', message: err.message }); });
     return () => { cancelled = true; };
-  }, [email]);
-  return allowed;
+  }, [email, retryKey]);
+  return status;
 }
 
 function CenteredMessage({ children }) {
@@ -501,7 +504,25 @@ function CenteredMessage({ children }) {
   );
 }
 
+// Google sign-in errors worth telling the user about — a closed/cancelled popup isn't one of
+// them (the user did that on purpose), everything else (blocked popup, unauthorized domain,
+// network failure) should say something rather than leaving the button looking dead.
+const SIGN_IN_ERROR_MESSAGES = {
+  'auth/popup-blocked': 'Your browser blocked the sign-in popup. Allow popups for this site and try again.',
+  'auth/unauthorized-domain': "This site isn't authorized for sign-in yet. Ask whoever manages this board to check the Firebase authorized domains.",
+  'auth/network-request-failed': "Couldn't reach Google — check your connection and try again.",
+};
+const SIGN_IN_IGNORED_ERRORS = new Set(['auth/popup-closed-by-user', 'auth/cancelled-popup-request']);
+
 function SignInScreen() {
+  const [error, setError] = useState('');
+  function handleSignIn() {
+    setError('');
+    signInWithPopup(auth, googleProvider).catch((err) => {
+      if (SIGN_IN_IGNORED_ERRORS.has(err.code)) return;
+      setError(SIGN_IN_ERROR_MESSAGES[err.code] || `Couldn't sign you in: ${err.message || err.code}`);
+    });
+  }
   return e(
     CenteredMessage,
     null,
@@ -514,9 +535,10 @@ function SignInScreen() {
     e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Digital Team Planner'),
     e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '22rem' } }, 'Sign in to see and edit the shared board with your team.'),
     e('button', {
-      onClick: () => signInWithPopup(auth, googleProvider).catch(() => {}),
+      onClick: handleSignIn,
       style: { padding: '0.625rem 1.25rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' },
-    }, 'Sign in with Google')
+    }, 'Sign in with Google'),
+    error && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', maxWidth: '22rem' } }, error)
   );
 }
 
@@ -610,32 +632,38 @@ function useDragScroll(ref) {
   }, [ref]);
 }
 
+// Returns { docs, error }: docs is null while loading, an array once loaded (possibly empty).
+// error carries the failure message when a snapshot listener errors out (permissions, offline,
+// a misconfigured rule) — kept separate from docs so a genuinely empty collection never gets
+// rendered identically to one that failed to load.
 function usePromotionsCollection() {
-  const [docs, setDocs] = useState(null); // null = loading
+  const [docs, setDocs] = useState(null);
+  const [error, setError] = useState(null);
   useEffect(() => {
     const q = query(collection(fdb, 'promotions'), orderBy('launchDate'));
     const unsub = onSnapshot(
       q,
-      (snap) => setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      () => setDocs((prev) => prev || [])
+      (snap) => { setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setDocs((prev) => prev || []); setError(err.message || 'Could not load promotions.'); }
     );
     return unsub;
   }, []);
-  return docs;
+  return { docs, error };
 }
 
 function useEmailsCollection() {
-  const [docs, setDocs] = useState(null); // null = loading
+  const [docs, setDocs] = useState(null);
+  const [error, setError] = useState(null);
   useEffect(() => {
     const q = query(collection(fdb, 'emails'), orderBy('sendDate'));
     const unsub = onSnapshot(
       q,
-      (snap) => setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      () => setDocs((prev) => prev || [])
+      (snap) => { setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setDocs((prev) => prev || []); setError(err.message || 'Could not load emails.'); }
     );
     return unsub;
   }, []);
-  return docs;
+  return { docs, error };
 }
 
 // The team directory — builds itself organically as people sign in (see the self-registration
@@ -655,17 +683,18 @@ function useUsersDirectory() {
 
 // Generic top-level collection listener, used by both test trackers (paidTests, croTests).
 function useCollectionDocs(collectionName, orderField) {
-  const [docs, setDocs] = useState(null); // null = loading
+  const [docs, setDocs] = useState(null);
+  const [error, setError] = useState(null);
   useEffect(() => {
     const q = query(collection(fdb, collectionName), orderBy(orderField));
     const unsub = onSnapshot(
       q,
-      (snap) => setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      () => setDocs((prev) => prev || [])
+      (snap) => { setDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setDocs((prev) => prev || []); setError(err.message || `Could not load ${collectionName}.`); }
     );
     return unsub;
   }, [collectionName, orderField]);
-  return docs;
+  return { docs, error };
 }
 
 function useTasksByPromo(promoIds) {
@@ -700,13 +729,18 @@ function useTasksByPromo(promoIds) {
 
 function useActivityLog(active) {
   const [entries, setEntries] = useState(null); // null = loading
+  const [error, setError] = useState(null);
   useEffect(() => {
     if (!active) return;
     const q = query(collection(fdb, 'activity'), orderBy('at', 'desc'), limit(100));
-    const unsub = onSnapshot(q, (snap) => setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => setEntries((prev) => prev || []));
+    const unsub = onSnapshot(
+      q,
+      (snap) => { setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setEntries((prev) => prev || []); setError(err.message || 'Could not load the activity log.'); }
+    );
     return unsub;
   }, [active]);
-  return entries;
+  return { entries, error };
 }
 
 function PromotionPlanner({ user }) {
@@ -727,12 +761,12 @@ function PromotionPlanner({ user }) {
     try { await addDoc(collection(fdb, 'activity'), { ...entry, by: actorName, at: serverTimestamp() }); } catch (err) {}
   }
 
-  const promoDocs = usePromotionsCollection();
+  const { docs: promoDocs, error: promoDocsError } = usePromotionsCollection();
   const promoIds = useMemo(() => (promoDocs || []).map((p) => p.id), [promoDocs]);
   const tasksByPromo = useTasksByPromo(promoIds);
-  const emails = useEmailsCollection();
-  const paidTests = useCollectionDocs('paidTests', 'startDate');
-  const croTests = useCollectionDocs('croTests', 'startDate');
+  const { docs: emails, error: emailsError } = useEmailsCollection();
+  const { docs: paidTests, error: paidTestsError } = useCollectionDocs('paidTests', 'startDate');
+  const { docs: croTests, error: croTestsError } = useCollectionDocs('croTests', 'startDate');
 
   // Seed the store once, guarded by a transaction so concurrent first-openers don't double-seed.
   useEffect(() => {
@@ -855,7 +889,7 @@ function PromotionPlanner({ user }) {
   const [promoView, setPromoView] = useState('board'); // 'board' | 'timeline'
   const [acqView, setAcqView] = useState('board'); // 'board' | 'timeline' (Paid Media)
   const [webView, setWebView] = useState('board'); // 'board' | 'timeline' (CRO/UX)
-  const activityEntries = useActivityLog(section === 'activity');
+  const { entries: activityEntries, error: activityError } = useActivityLog(section === 'activity');
   const timelineScrollRef = useRef(null);
   useDragScroll(timelineScrollRef);
   useEffect(() => {
@@ -2120,8 +2154,9 @@ function PromotionPlanner({ user }) {
       'div',
       { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem', maxWidth: '48rem' } },
       e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, 'Who created and changed what, most recent first — the last 100 changes across the whole board.'),
-      !activityEntries && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
-      activityEntries && activityEntries.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'No activity yet.'),
+      !activityEntries && !activityError && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      activityError && e('p', { style: { fontSize: '0.875rem', color: 'var(--danger)' } }, `Couldn't load the activity log: ${activityError}`),
+      !activityError && activityEntries && activityEntries.length === 0 && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'No activity yet.'),
       activityEntries && activityEntries.length > 0 && e(
         'div',
         { style: { display: 'flex', flexDirection: 'column' } },
@@ -2267,10 +2302,25 @@ function PromotionPlanner({ user }) {
     );
   }
 
+  // Surfaced separately from each section's own "Loading…"/"nothing here" text, so a genuine
+  // load failure (offline, a permissions problem) never looks identical to an empty board.
+  const dataErrors = [
+    promoDocsError && 'promotions',
+    emailsError && 'emails',
+    paidTestsError && 'paid media tests',
+    croTestsError && 'CRO/UX tests',
+  ].filter(Boolean);
+  const dataErrorBanner = dataErrors.length > 0 && e(
+    'div',
+    { style: { padding: '0.625rem 2rem', background: 'var(--danger)', color: '#fff', fontSize: '0.8125rem', textAlign: 'center' } },
+    `Couldn't load ${dataErrors.join(', ')} — you may be offline, or something's misconfigured. What you see below may be incomplete.`
+  );
+
   return e(
     'div',
     { style: { width: '100%', minHeight: '100vh', background: 'var(--bg)', fontFamily: 'Arial, Helvetica, sans-serif' } },
     header,
+    dataErrorBanner,
     sectionTabs,
     subTabs,
     myWorkSection,
@@ -2287,15 +2337,30 @@ function PromotionPlanner({ user }) {
   );
 }
 
+function AccessErrorScreen({ message, onRetry }) {
+  return e(
+    CenteredMessage,
+    null,
+    e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, "Couldn't check your access"),
+    e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '24rem' } }, message || "Something went wrong reaching the board's access list. This is usually a connection problem, not a permissions one."),
+    e('button', {
+      onClick: onRetry,
+      style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' },
+    }, 'Try again')
+  );
+}
+
 function App() {
   const user = useAuthUser();
   const email = user ? user.email : null;
-  const allowed = useAllowed(email);
+  const [retryKey, setRetryKey] = useState(0);
+  const allowed = useAllowed(email, retryKey);
 
   if (user === undefined) return e(CenteredMessage, null, e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Checking sign-in…'));
   if (user === null) return e(SignInScreen);
-  if (allowed === null) return e(CenteredMessage, null, e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Checking access…'));
-  if (allowed === false) return e(DeniedScreen, { user });
+  if (allowed.state === 'checking') return e(CenteredMessage, null, e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Checking access…'));
+  if (allowed.state === 'error') return e(AccessErrorScreen, { message: allowed.message, onRetry: () => setRetryKey((k) => k + 1) });
+  if (allowed.state === 'denied') return e(DeniedScreen, { user });
   return e(PromotionPlanner, { user });
 }
 
