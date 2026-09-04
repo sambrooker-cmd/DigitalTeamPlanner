@@ -27,6 +27,16 @@ language: a light bar for the prep/build period, a solid bar for when
 it's actually live, and separate launch/end markers — so "still being
 prepped" vs. "actually running" is always visually distinct.
 
+Every promotion, task, email, and test can be **duplicated** from its edit
+modal — it pre-fills a new, unsaved copy (dates and result fields cleared,
+nothing else) so a repeat promotion or test doesn't mean re-typing the whole
+form; nothing is written until you adjust it and hit Save. Each of those
+also carries its own **comment thread**, for back-and-forth that would
+otherwise overwrite the single free-text notes field. Promotions, Emails,
+Paid Media, and CRO/UX each have an **Export CSV** button (on the
+promotion's board, and by the "+ New…" button on the other three) for
+pulling the current data into a deck or report.
+
 ## Live board
 
 `index.html` is a single self-contained page (React, loaded from cdnjs, no
@@ -84,19 +94,34 @@ service cloud.firestore {
       allow read, write: if isAllowed();
       match /tasks/{taskId} {
         allow read, write: if isAllowed();
+        match /comments/{commentId} {
+          allow read, write: if isAllowed();
+        }
+      }
+      match /comments/{commentId} {
+        allow read, write: if isAllowed();
       }
     }
 
     match /emails/{emailId} {
       allow read, write: if isAllowed();
+      match /comments/{commentId} {
+        allow read, write: if isAllowed();
+      }
     }
 
     match /paidTests/{testId} {
       allow read, write: if isAllowed();
+      match /comments/{commentId} {
+        allow read, write: if isAllowed();
+      }
     }
 
     match /croTests/{testId} {
       allow read, write: if isAllowed();
+      match /comments/{commentId} {
+        allow read, write: if isAllowed();
+      }
     }
 
     match /activity/{entryId} {
@@ -162,6 +187,13 @@ by these rules server-side, not just hidden in the UI.
   the timeline, the "prep" bar runs from when the test was logged
   (`createdAt`) to `startDate`, and "live" runs `startDate` to `endDate`
   (or a 14-day estimate if `endDate` isn't set yet).
+- `.../comments/{commentId}` — a comment thread under any commentable item
+  (`promotions/{promoId}/comments`, `promotions/{promoId}/tasks/{taskId}/comments`,
+  `emails/{emailId}/comments`, `paidTests/{testId}/comments`,
+  `croTests/{testId}/comments`). Each comment is `text`, `by`, `byEmail`,
+  `at` — anyone on the allowlist can read and post; only the author (matched
+  on `byEmail`) can delete their own comment. Not shown in the Activity log,
+  which tracks structural changes rather than conversation.
 - `activity/{entryId}` — an append-only change log: one document per create,
   edit, move, or delete anywhere on the board (`action`, `by`, `at`,
   `promoName`, `taskTitle`, `detail`). Shown newest-first under the

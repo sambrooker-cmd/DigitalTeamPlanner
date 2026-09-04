@@ -477,6 +477,29 @@ function formatDateTime(ts) {
   return ts.toDate().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+// --- CSV export: columns is [{ label, get(row) }], rows is any array of plain objects. ---
+function rowsToCSV(rows, columns) {
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [columns.map((c) => esc(c.label)).join(',')];
+  rows.forEach((row) => lines.push(columns.map((c) => esc(c.get(row))).join(',')));
+  return lines.join('\r\n');
+}
+
+function downloadCSV(filename, rows, columns) {
+  const blob = new Blob([rowsToCSV(rows, columns)], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // --- Auth: Google sign-in gated by a Firestore allowlist ---
 function useAuthUser() {
   const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
@@ -756,6 +779,103 @@ function useActivityLog(active) {
   return { entries, error };
 }
 
+// A comment thread lives at pathSegments (e.g. ['promotions', promoId, 'comments'] or
+// ['promotions', promoId, 'tasks', taskId, 'comments']) — one subcollection per commentable
+// item, oldest first. Only subscribes once every segment is a real id (an unsaved new item has
+// no id yet, so there's nothing to comment on).
+function useComments(pathSegments) {
+  const [comments, setComments] = useState(null);
+  const [error, setError] = useState(null);
+  const key = pathSegments.join('/');
+  const ready = pathSegments.every(Boolean);
+  useEffect(() => {
+    if (!ready) { setComments(null); setError(null); return; }
+    const q = query(collection(fdb, ...pathSegments), orderBy('at', 'asc'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => { setComments(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setError(null); },
+      (err) => { setComments((prev) => prev || []); setError(err.message || 'Could not load comments.'); }
+    );
+    return unsub;
+  }, [key, ready]);
+  return { comments, error };
+}
+
+// Reusable comment thread, dropped into any modal for an already-saved item (pathSegments
+// points at that item's own 'comments' subcollection). Anyone on the allowlist can read every
+// comment; only the author can delete their own.
+function CommentsThread({ pathSegments, currentUserEmail, currentUserName }) {
+  const { comments, error } = useComments(pathSegments);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    try {
+      await addDoc(collection(fdb, ...pathSegments), { text: text.trim(), by: currentUserName, byEmail: currentUserEmail, at: serverTimestamp() });
+      setText('');
+    } catch (err) {
+      window.alert('Could not post comment: ' + err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeComment(id) {
+    if (!window.confirm('Delete this comment?')) return;
+    try {
+      await deleteDoc(doc(fdb, ...pathSegments, id));
+    } catch (err) {
+      window.alert('Could not delete comment: ' + err.message);
+    }
+  }
+
+  return e(
+    'div',
+    { style: { marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' } },
+    e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.5rem' } }, 'Comments'),
+    error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load comments: ${error}`),
+    !comments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
+    comments && comments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No comments yet.'),
+    comments && comments.length > 0 && e(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
+      comments.map((c) => e(
+        'div',
+        { key: c.id, style: { fontSize: '0.8125rem', background: 'var(--surface-alt)', borderRadius: '0.5rem', padding: '0.5rem 0.625rem' } },
+        e(
+          'div',
+          { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
+          e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
+          e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
+        ),
+        e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, c.text),
+        c.byEmail === currentUserEmail && e('button', {
+          onClick: () => removeComment(c.id),
+          style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
+        }, 'Delete')
+      ))
+    ),
+    e(
+      'div',
+      { style: { display: 'flex', gap: '0.5rem' } },
+      e('input', {
+        style: { ...inputStyle, flex: 1 },
+        value: text,
+        placeholder: 'Add a comment…',
+        onChange: (ev) => setText(ev.target.value),
+        onKeyDown: (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } },
+      }),
+      e('button', {
+        onClick: submit,
+        disabled: busy,
+        style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 },
+      }, 'Post')
+    )
+  );
+}
+
 function PromotionPlanner({ user }) {
   const online = useOnlineStatus();
   const isMobile = useIsMobile();
@@ -946,6 +1066,47 @@ function PromotionPlanner({ user }) {
     return Math.round((live / promo.tasks.length) * 100);
   }
 
+  // Assignees are stored as an email (see renderAssigneeSelect); shown as a real name wherever
+  // we can resolve one from the team directory, same as the dropdowns do.
+  function assigneeLabel(email) {
+    if (!email) return '';
+    const u = (users || []).find((u) => u.email === email);
+    return u ? (u.displayName || u.email) : email;
+  }
+
+  function exportPromoTasksCSV(promo) {
+    downloadCSV(`${promo.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-tasks.csv`, promo.tasks, [
+      { label: 'Team', get: (t) => (TEAMS.find((tm) => tm.id === t.team) || {}).label || t.team },
+      { label: 'Type', get: (t) => (TYPES.find((ty) => ty.id === t.type) || {}).label || t.type },
+      { label: 'Task', get: (t) => t.title },
+      { label: 'Assignee', get: (t) => assigneeLabel(t.assignee) },
+      { label: 'Due date', get: (t) => t.due || '' },
+      { label: 'Status', get: (t) => t.status },
+      { label: 'Notes', get: (t) => t.notes || '' },
+    ]);
+  }
+
+  function exportEmailsCSV() {
+    downloadCSV('emails.csv', emails || [], [
+      { label: 'Subject', get: (em) => em.subject },
+      { label: 'Send date', get: (em) => em.sendDate || '' },
+      { label: 'Status', get: (em) => em.status },
+      { label: 'Assignee', get: (em) => assigneeLabel(em.assignee) },
+      { label: 'Related promotion', get: (em) => { const p = em.relatedPromoId ? promotions.find((pr) => pr.id === em.relatedPromoId) : null; return p ? p.name : ''; } },
+      { label: 'HubSpot link', get: (em) => em.hubspotLink || '' },
+      { label: 'Notes', get: (em) => em.notes || '' },
+    ]);
+  }
+
+  function exportTestsCSV(config, testItems) {
+    const columns = config.fields.map((f) => ({
+      label: f.label,
+      get: (it) => (f.type === 'user' ? assigneeLabel(it[f.key]) : (it[f.key] || '')),
+    }));
+    columns.push({ label: 'Status', get: (it) => it.status });
+    downloadCSV(`${config.label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.csv`, testItems || [], columns);
+  }
+
   // --- Mutations, all against Firestore, each stamped with who/when and logged ---
   async function addTask(promoId, promoName, data) {
     setBusy(true);
@@ -1065,6 +1226,13 @@ function PromotionPlanner({ user }) {
     setEmailModal(true);
   }
 
+  // Same unsaved-copy pattern as duplicatePromoClick: send date, HubSpot link, and notes reset
+  // since those are specific to the original send; status goes back to the first stage.
+  function duplicateEmailClick() {
+    if (!emailForm) return;
+    setEmailForm({ id: null, subject: `${emailForm.subject} (copy)`, sendDate: '', status: EMAIL_STATUSES[0], assignee: emailForm.assignee, relatedPromoId: emailForm.relatedPromoId || '', hubspotLink: '', notes: '' });
+  }
+
   async function saveEmail() {
     if (!emailForm.subject.trim() || !emailForm.sendDate) {
       window.alert('Subject and send date are required.');
@@ -1153,6 +1321,21 @@ function PromotionPlanner({ user }) {
     setTestModal(true);
   }
 
+  // Same unsaved-copy pattern as duplicatePromoClick: dates and the result fields reset since
+  // those belong to the original run; every other field (hypothesis, channel, etc.) carries over.
+  function duplicateTestClick() {
+    if (!testForm) return;
+    const config = findTrackerConfig(testForm.__collection);
+    const blank = { id: null, status: config.statuses[0], __collection: config.collection, __label: config.label };
+    config.fields.forEach((f) => {
+      if (f.key === 'name') blank[f.key] = `${testForm.name || ''} (copy)`;
+      else if (f.key === 'startDate' || f.key === 'endDate' || f.key === 'result') blank[f.key] = '';
+      else if (f.key === 'outcome') blank[f.key] = 'TBD';
+      else blank[f.key] = testForm[f.key] || '';
+    });
+    setTestForm(blank);
+  }
+
   async function saveTest() {
     const config = findTrackerConfig(testForm.__collection);
     if (!testForm.name || !testForm.name.trim() || !testForm.startDate) {
@@ -1212,6 +1395,13 @@ function PromotionPlanner({ user }) {
     setTaskModal(true);
   }
 
+  // Same unsaved-copy pattern as duplicatePromoClick: due date is cleared (it's specific to
+  // the original task) and status resets to the first column so the copy starts its own workflow.
+  function duplicateTaskClick() {
+    if (!taskForm) return;
+    setTaskForm({ id: null, team: taskForm.team, status: STATUSES[0], type: taskForm.type, title: `${taskForm.title} (copy)`, assignee: taskForm.assignee, due: '', notes: '' });
+  }
+
   async function saveTask() {
     if (!activePromo) return;
     if (!taskForm.title.trim()) {
@@ -1263,6 +1453,15 @@ function PromotionPlanner({ user }) {
   function openEditPromo(promo) {
     setPromoForm({ id: promo.id, name: promo.name, launchDate: promo.launchDate, endDate: promo.endDate || '', description: promo.description || '', archived: promo.archived || false, createdBy: promo.createdBy, createdAt: promo.createdAt });
     setPromoModal(true);
+  }
+
+  // Swaps the currently-open edit form into a fresh, unsaved "New promotion" form pre-filled
+  // from it — nothing is written until the user hits Save, so a duplicate never leaves behind
+  // an extra record if they change their mind. Launch/end date are left blank since a repeat
+  // promotion almost always runs on different dates.
+  function duplicatePromoClick() {
+    if (!promoForm) return;
+    setPromoForm({ id: null, name: `${promoForm.name} (copy)`, launchDate: '', endDate: '', description: promoForm.description || '' });
   }
 
   async function savePromo() {
@@ -1660,7 +1859,15 @@ function PromotionPlanner({ user }) {
         taskErrors[activePromo.id] && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', marginBottom: '1rem' } }, `Couldn't load tasks for this promotion: ${taskErrors[activePromo.id]}. What's shown below may be missing cards.`),
         typeFilters,
         board,
-        e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit.")
+        e(
+          'div',
+          { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '1.5rem' } },
+          e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit."),
+          e('button', {
+            onClick: () => exportPromoTasksCSV(activePromo),
+            style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 },
+          }, 'Export CSV')
+        )
       );
     }
 
@@ -2027,7 +2234,12 @@ function PromotionPlanner({ user }) {
         'div',
         { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem' } },
         e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, 'Emails'),
-        e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
+        e(
+          'div',
+          { style: { display: 'flex', gap: '0.5rem' } },
+          e('button', { onClick: exportEmailsCSV, style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export CSV'),
+          e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
+        )
       ),
       !emails && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
       emails && emailView === 'board' && emailBoard,
@@ -2128,7 +2340,12 @@ function PromotionPlanner({ user }) {
         'div',
         { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '1rem', padding: subView === 'timeline' ? (isMobile ? '1.5rem 1rem 0' : '1.5rem 2rem 0') : undefined } },
         e('h2', { className: 'font-display', style: { fontSize: '1.25rem', color: PURPLE_DARK, margin: 0 } }, config.label),
-        e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
+        e(
+          'div',
+          { style: { display: 'flex', gap: '0.5rem' } },
+          e('button', { onClick: () => exportTestsCSV(config, items), style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export CSV'),
+          e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
+        )
       ),
       !items && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)', padding: subView === 'timeline' ? (isMobile ? '0 1rem' : '0 2rem') : undefined } }, 'Loading…'),
       items && subView === 'board' && testBoard,
@@ -2190,9 +2407,15 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        taskForm.id ? e('button', { onClick: deleteTaskClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete') : e('span'),
+        taskForm.id ? e(
+          'div',
+          { style: { display: 'flex', gap: '1rem' } },
+          e('button', { onClick: duplicateTaskClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+          e('button', { onClick: deleteTaskClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
+        ) : e('span'),
         e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
-      )
+      ),
+      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
     );
   }
 
@@ -2220,11 +2443,13 @@ function PromotionPlanner({ user }) {
         promoForm.id ? e(
           'div',
           { style: { display: 'flex', gap: '1rem' } },
+          e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
           e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
           e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
         ) : e('span'),
         e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
-      )
+      ),
+      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
     );
   }
 
@@ -2262,9 +2487,15 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        emailForm.id ? e('button', { onClick: deleteEmailClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete') : e('span'),
+        emailForm.id ? e(
+          'div',
+          { style: { display: 'flex', gap: '1rem' } },
+          e('button', { onClick: duplicateEmailClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+          e('button', { onClick: deleteEmailClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
+        ) : e('span'),
         e('button', { onClick: saveEmail, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
-      )
+      ),
+      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
     );
   }
 
@@ -2285,9 +2516,15 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-        testForm.id ? e('button', { onClick: deleteTestClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete') : e('span'),
+        testForm.id ? e(
+          'div',
+          { style: { display: 'flex', gap: '1rem' } },
+          e('button', { onClick: duplicateTestClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+          e('button', { onClick: deleteTestClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
+        ) : e('span'),
         e('button', { onClick: saveTest, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')
-      )
+      ),
+      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName })
     );
   }
 
