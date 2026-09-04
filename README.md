@@ -403,16 +403,18 @@ time. See "Recently Deleted" above for the UI this powers.
   there so they can be unarchived or deleted).
 
   For a big umbrella campaign (Wave Season, say) running several distinct
-  sub-promotions underneath it, a promotion can name another promotion as
-  its `parentPromoId`. The parent's board shows a **Sub-promotions**
-  section listing all of them (same pattern as Linked work below — click
-  one to jump straight to it, "+ Sub-promotion" to add one pre-linked),
-  and a sub-promotion's own board shows a small **"Part of [Parent
-  name]"** badge linking back up. It's a single level (a sub-promotion's
-  own `parentPromoId` isn't itself walked further), which is all the
-  central/sub-promotion structure calls for — nothing elsewhere (Overview,
-  Stats, My Work, search) currently groups or indents by this relationship,
-  it's purely a link between the two promotions' own boards.
+  sub-promotions underneath it, a sub-promotion can name the umbrella one
+  as its `parentPromoId`. A "central" promotion — one that's *named as*
+  someone else's `parentPromoId` — isn't a different kind of record: it's
+  planned exactly the same way as any other promotion (same board, same
+  task structure), just visually called out wherever promotions appear —
+  the promotion picker, the Promotions timeline, and the Overview
+  timeline — with a small "Central" badge and one shade bolder color
+  (`PURPLE_DARK` where a regular promotion's bar is `PURPLE`, and so on),
+  same accent family throughout rather than a new color. There's no
+  separate list of sub-promotions or "part of" breadcrumb — the only
+  place the relationship is set is the "Parent promotion" dropdown on a
+  sub-promotion's own edit form; everywhere else, it's just a color.
 - `promotions/{promoId}/tasks/{taskId}` — one document per task/result card
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never
