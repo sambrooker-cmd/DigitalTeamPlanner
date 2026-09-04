@@ -1,4 +1,4 @@
-# Promotion Planner
+# Digital Team Planner
 
 A shared planning tool for the Acquisition, Retention, and Website teams.
 Navigation is organized by team:

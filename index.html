@@ -485,7 +485,7 @@ function SignInScreen() {
       style: { height: '40px', width: 'auto', marginBottom: '0.5rem' },
       onError: (ev) => { ev.target.style.display = 'none'; },
     }),
-    e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Promotion Planner'),
+    e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Digital Team Planner'),
     e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '22rem' } }, 'Sign in to see and edit the shared board with your team.'),
     e('button', {
       onClick: () => signInWithPopup(auth, googleProvider).catch(() => {}),
@@ -1246,7 +1246,7 @@ function PromotionPlanner({ user }) {
       e(
         'div',
         null,
-        e('h1', { className: 'font-display', style: { fontSize: isMobile ? '1.25rem' : '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Promotion Planner'),
+        e('h1', { className: 'font-display', style: { fontSize: isMobile ? '1.25rem' : '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Digital Team Planner'),
         !isMobile && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.125rem' } }, 'Keeping Acquisition, Retention and Website aligned on every launch')
       )
     ),
