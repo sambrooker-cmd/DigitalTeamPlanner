@@ -374,6 +374,27 @@ function Field({ label, required, children }) {
 
 const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', fontSize: '0.875rem', outline: 'none', fontFamily: 'inherit', background: 'var(--surface)', color: 'var(--text-primary)' };
 
+// A single headline number — plain proportional figures (not tabular-nums; this isn't a column
+// of numbers that needs to align), color left to the default heading tone unless the value
+// itself is a status signal worth calling out (e.g. an overdue count).
+function StatTile({ value, label, color }) {
+  return e(
+    'div',
+    { style: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.75rem', padding: '1rem', minWidth: '9rem', flex: '1 1 9rem' } },
+    e('div', { className: 'font-display', style: { fontSize: '1.75rem', fontWeight: 700, color: color || PURPLE_DARK, lineHeight: 1.1 } }, value),
+    e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' } }, label)
+  );
+}
+
+function StatGroup({ title, tiles }) {
+  return e(
+    'div',
+    { style: { marginBottom: '1.75rem' } },
+    e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, title),
+    e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.75rem' } }, tiles.map((t, i) => e(StatTile, { key: i, ...t })))
+  );
+}
+
 // A dropdown of real team members (from the `users` directory), storing their email — a
 // reliable key "My work" can filter on, unlike free-typed names. Keeps whatever value is
 // already on the record as a selectable option even if it doesn't match anyone in the
@@ -1021,6 +1042,57 @@ function PromotionPlanner({ user }) {
     return items;
   }, [timelinePromotions, emails, paidTests, croTests, user.email]);
 
+  // A handful of headline numbers pulled from data already loaded above — nothing new to
+  // maintain, no separate reporting step. "Decided" tests are Win/Loss only; TBD/Inconclusive
+  // don't count toward a win rate either way. Overdue only looks at non-archived promotions —
+  // an archived one is done, not slipping.
+  const stats = useMemo(() => {
+    const now = new Date();
+    const ymPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    let promosLive = 0;
+    let promosInPrep = 0;
+    timelinePromotions.forEach((p) => {
+      const launched = daysUntil(p.launchDate) <= 0;
+      const ended = p.endDate && daysUntil(p.endDate) < 0;
+      if (launched && !ended) promosLive++;
+      else if (!launched) promosInPrep++;
+    });
+    const promosArchived = (promotions || []).filter((p) => p.archived).length;
+
+    function testTrackerStats(items) {
+      const list = items || [];
+      const wins = list.filter((t) => t.outcome === 'Win').length;
+      const losses = list.filter((t) => t.outcome === 'Loss').length;
+      const decided = wins + losses;
+      return {
+        winRate: decided > 0 ? Math.round((wins / decided) * 100) : null,
+        live: list.filter((t) => t.status === 'Live').length,
+        total: list.length,
+      };
+    }
+
+    const emailsThisMonth = (emails || []).filter((em) => em.sendDate && em.sendDate.startsWith(ymPrefix));
+    const emailsSentThisMonth = emailsThisMonth.filter((em) => em.status === 'Sent' || em.status === 'Reported').length;
+
+    let overdueTasks = 0;
+    timelinePromotions.forEach((p) => {
+      (p.tasks || []).forEach((t) => {
+        if (t.due && daysUntil(t.due) < 0 && t.status !== 'Live' && t.status !== 'Reports') overdueTasks++;
+      });
+    });
+    const overdueEmails = (emails || []).filter((em) => em.sendDate && daysUntil(em.sendDate) < 0 && em.status !== 'Sent' && em.status !== 'Reported').length;
+
+    return {
+      promosLive, promosInPrep, promosArchived,
+      paid: testTrackerStats(paidTests),
+      cro: testTrackerStats(croTests),
+      emailsThisMonth: emailsThisMonth.length,
+      emailsSentThisMonth,
+      overdue: overdueTasks + overdueEmails,
+    };
+  }, [timelinePromotions, promotions, paidTests, croTests, emails]);
+
   const [activePromoId, setActivePromoId] = useState(null);
   useEffect(() => {
     if (promotions && promotions.length && !activePromoId) {
@@ -1652,6 +1724,7 @@ function PromotionPlanner({ user }) {
     { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: isMobile ? '1rem 1rem 0' : '1rem 2rem 0' } },
     e('button', { onClick: () => setSection('mywork'), style: sectionTabStyle(section === 'mywork') }, 'My Work'),
     e('button', { onClick: () => setSection('overview'), style: sectionTabStyle(section === 'overview') }, 'Overview'),
+    e('button', { onClick: () => setSection('stats'), style: sectionTabStyle(section === 'stats') }, 'Stats'),
     e('button', { onClick: () => setSection('promotions'), style: sectionTabStyle(section === 'promotions') }, 'Promotions'),
     e('button', { onClick: () => setSection('acquisition'), style: sectionTabStyle(section === 'acquisition') }, 'Acquisition'),
     e('button', { onClick: () => setSection('retention'), style: sectionTabStyle(section === 'retention') }, 'Retention'),
@@ -2089,6 +2162,52 @@ function PromotionPlanner({ user }) {
         endTitle: 'Ends',
         emptyLabel: rollupItems.length === 0 ? 'Nothing scheduled yet.' : 'No matches for these filters.',
         footerNote: 'Everything across Promotions, Emails, Paid Media, and CRO/UX in one place. Click a row to open it where it lives.',
+      })
+    );
+  }
+
+  let statsSection = null;
+  if (section === 'stats') {
+    statsSection = e(
+      'div',
+      { style: { padding: isMobile ? '1.5rem 1rem 1rem' : '1.5rem 2rem', maxWidth: '56rem' } },
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1.25rem' } }, 'A quick read on where things stand, pulled live from the boards — nothing extra to maintain.'),
+      e(StatGroup, {
+        title: 'Promotions',
+        tiles: [
+          { value: stats.promosLive, label: 'Live now' },
+          { value: stats.promosInPrep, label: 'In prep' },
+          { value: stats.promosArchived, label: 'Archived' },
+        ],
+      }),
+      e(StatGroup, {
+        title: 'Paid Media Tests',
+        tiles: [
+          { value: stats.paid.winRate === null ? '—' : `${stats.paid.winRate}%`, label: 'Win rate (of decided tests)' },
+          { value: stats.paid.live, label: 'Live now' },
+          { value: stats.paid.total, label: 'Total logged' },
+        ],
+      }),
+      e(StatGroup, {
+        title: 'CRO/UX Tests',
+        tiles: [
+          { value: stats.cro.winRate === null ? '—' : `${stats.cro.winRate}%`, label: 'Win rate (of decided tests)' },
+          { value: stats.cro.live, label: 'Live now' },
+          { value: stats.cro.total, label: 'Total logged' },
+        ],
+      }),
+      e(StatGroup, {
+        title: 'Emails',
+        tiles: [
+          { value: stats.emailsSentThisMonth, label: 'Sent this month' },
+          { value: stats.emailsThisMonth, label: 'Total planned this month' },
+        ],
+      }),
+      e(StatGroup, {
+        title: 'Team health',
+        tiles: [
+          { value: stats.overdue, label: 'Overdue tasks & emails (past due, not yet done)', color: stats.overdue > 0 ? 'var(--danger)' : 'var(--success)' },
+        ],
       })
     );
   }
@@ -2564,6 +2683,7 @@ function PromotionPlanner({ user }) {
     subTabs,
     myWorkSection,
     overviewSection,
+    statsSection,
     boardSection,
     timelineSection,
     emailsSection,

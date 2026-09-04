@@ -14,6 +14,13 @@ Navigation is organized by team:
   promotion, the assignee filter matches if any of its tasks are
   assigned to that person, since a promotion itself has no single
   assignee.
+- **Stats** — a handful of headline numbers read straight off the boards
+  above: promotions live/in prep/archived, each test tracker's win rate
+  (Win vs. Loss only — TBD/Inconclusive don't count either way) plus how
+  many are live and logged in total, emails sent vs. planned this
+  calendar month, and a team-health count of overdue tasks and emails
+  (past their due/send date and not yet marked done). Nothing is stored
+  separately for this — it's all computed live from existing data.
 - **Promotions** — cross-team, since every promotion involves all three
   teams: a kanban board (briefing through launch to results reporting)
   and a timeline.
