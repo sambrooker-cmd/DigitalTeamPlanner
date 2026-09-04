@@ -55,7 +55,14 @@ also carries its own **comment thread**, for back-and-forth that would
 otherwise overwrite the single free-text notes field. Promotions, Emails,
 Paid Media, and CRO/UX each have an **Export CSV** button (on the
 promotion's board, and by the "+ New…" button on the other three) for
-pulling the current data into a deck or report.
+pulling the current data into a deck or report. Emails and Promotions also
+have an **Export .ics** button next to it — Emails exports every email as
+an all-day event on its send date; a promotion exports its own launch/end
+dates — for importing into Outlook, Google Calendar, or Apple Calendar.
+
+On the Emails **calendar** view, dragging an email's chip to a different
+day reschedules it (updates `sendDate`) — same drag-and-drop as the status
+board, just against days instead of columns.
 
 For promotions that recur (Wave Season, Black Friday), any promotion's edit
 screen has a **Save as template** button that snapshots its task structure —

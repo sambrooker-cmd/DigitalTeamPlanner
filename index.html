@@ -225,6 +225,7 @@ const ACTION_LABELS = {
   email_created: 'created email',
   email_updated: 'edited email',
   email_moved: 'moved email',
+  email_rescheduled: 'rescheduled email',
   email_deleted: 'deleted email',
   test_created: 'created test',
   test_updated: 'edited test',
@@ -577,10 +578,8 @@ function rowsToCSV(rows, columns) {
   return lines.join('\r\n');
 }
 
-function downloadCSV(filename, rows, columns) {
-  // Leading BOM so Excel on Windows renders "£" and accented names correctly instead of
-  // mojibake — without it, Excel guesses the file's encoding instead of trusting UTF-8.
-  const blob = new Blob(['﻿' + rowsToCSV(rows, columns)], { type: 'text/csv;charset=utf-8;' });
+function downloadBlob(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -589,6 +588,52 @@ function downloadCSV(filename, rows, columns) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function downloadCSV(filename, rows, columns) {
+  // Leading BOM so Excel on Windows renders "£" and accented names correctly instead of
+  // mojibake — without it, Excel guesses the file's encoding instead of trusting UTF-8.
+  downloadBlob(filename, '﻿' + rowsToCSV(rows, columns), 'text/csv;charset=utf-8;');
+}
+
+// --- .ics export: events is [{ uid, title, dateKey ('YYYY-MM-DD'), description }], one
+// all-day VEVENT per entry. No BOM here (unlike CSV) — calendar apps don't need the Excel
+// workaround, and some strict ICS parsers choke on one.
+function icsTimestamp(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+}
+
+function dateKeyPlusOneDay(dateKey) {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + 1);
+  return toDateKey(dt);
+}
+
+function escapeICSText(s) {
+  return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+}
+
+function eventsToICS(events) {
+  const dtstamp = icsTimestamp(new Date());
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Digital Team Planner//EN', 'CALSCALE:GREGORIAN'];
+  events.forEach((ev) => {
+    lines.push('BEGIN:VEVENT');
+    lines.push(`UID:${ev.uid}@digitalteamplanner.local`);
+    lines.push(`DTSTAMP:${dtstamp}`);
+    lines.push(`DTSTART;VALUE=DATE:${ev.dateKey.replace(/-/g, '')}`);
+    lines.push(`DTEND;VALUE=DATE:${dateKeyPlusOneDay(ev.dateKey).replace(/-/g, '')}`);
+    lines.push(`SUMMARY:${escapeICSText(ev.title)}`);
+    if (ev.description) lines.push(`DESCRIPTION:${escapeICSText(ev.description)}`);
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n');
+}
+
+function downloadICS(filename, events) {
+  downloadBlob(filename, eventsToICS(events), 'text/calendar;charset=utf-8;');
 }
 
 // --- Auth: Google sign-in gated by a Firestore allowlist ---
@@ -1387,6 +1432,27 @@ function PromotionPlanner({ user }) {
     ]);
   }
 
+  function exportEmailsICS() {
+    const events = (emails || []).filter((em) => em.sendDate).map((em) => ({
+      uid: `email-${em.id}`,
+      title: em.subject,
+      dateKey: em.sendDate,
+      description: [
+        `Status: ${em.status}`,
+        em.assignee ? `Assignee: ${assigneeLabel(em.assignee)}` : '',
+        em.notes || '',
+      ].filter(Boolean).join('\n'),
+    }));
+    downloadICS('emails.ics', events);
+  }
+
+  function exportPromoDatesICS(promo) {
+    const events = [];
+    if (promo.launchDate) events.push({ uid: `promo-launch-${promo.id}`, title: `Launch: ${promo.name}`, dateKey: promo.launchDate, description: promo.description || '' });
+    if (promo.endDate) events.push({ uid: `promo-end-${promo.id}`, title: `Ends: ${promo.name}`, dateKey: promo.endDate, description: '' });
+    downloadICS(`${promo.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-dates.ics`, events);
+  }
+
   function exportTestsCSV(config, testItems) {
     const columns = config.fields.map((f) => ({
       label: f.label,
@@ -1505,6 +1571,13 @@ function PromotionPlanner({ user }) {
     } catch (err) { pushToast('Could not move this email: ' + err.message); }
   }
 
+  async function rescheduleEmail(emailId, subject, newDate, oldDate) {
+    try {
+      await updateDoc(doc(fdb, 'emails', emailId), { sendDate: newDate, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await logActivity({ action: 'email_rescheduled', taskTitle: subject, detail: `${formatDate(oldDate)} → ${formatDate(newDate)}` });
+    } catch (err) { pushToast('Could not reschedule this email: ' + err.message); }
+  }
+
   function openNewEmail(status, sendDate, relatedPromoId) {
     setEmailForm({ id: null, subject: '', sendDate: sendDate || '', status: status || EMAIL_STATUSES[0], assignee: '', relatedPromoId: relatedPromoId || '', hubspotLink: '', notes: '' });
     setEmailModal(true);
@@ -1557,6 +1630,13 @@ function PromotionPlanner({ user }) {
     if (!draggedEmailId) return;
     const email = (emails || []).find((em) => em.id === draggedEmailId);
     if (email && email.status !== status) moveEmail(email.id, email.subject, status, email.status);
+    setDraggedEmailId(null);
+  }
+
+  function handleCalendarEmailDrop(dateKey) {
+    if (!draggedEmailId) return;
+    const email = (emails || []).find((em) => em.id === draggedEmailId);
+    if (email && email.sendDate !== dateKey) rescheduleEmail(email.id, email.subject, dateKey, email.sendDate);
     setDraggedEmailId(null);
   }
 
@@ -2338,10 +2418,19 @@ function PromotionPlanner({ user }) {
           'div',
           { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '1.5rem' } },
           e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, isMobile ? "This board is shared — everyone who opens it sees and edits the same data, live. Tap a task to edit or move it." : "This board is shared — everyone who opens it sees and edits the same data, live. Drag cards between columns, or click one to edit."),
-          e('button', {
-            onClick: () => exportPromoTasksCSV(activePromo),
-            style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 },
-          }, 'Export CSV')
+          e(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', flexShrink: 0 } },
+            e('button', {
+              onClick: () => exportPromoTasksCSV(activePromo),
+              style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
+            }, 'Export CSV'),
+            e('button', {
+              onClick: () => exportPromoDatesICS(activePromo),
+              title: 'Launch/end dates — import into Outlook, Google Calendar, or Apple Calendar',
+              style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' },
+            }, 'Export .ics')
+          )
         )
       );
     }
@@ -2736,6 +2825,8 @@ function PromotionPlanner({ user }) {
               {
                 key: key,
                 onClick: () => openNewEmail(EMAIL_STATUSES[0], key),
+                onDragOver: (ev) => ev.preventDefault(),
+                onDrop: (ev) => { ev.stopPropagation(); handleCalendarEmailDrop(key); },
                 style: {
                   minHeight: isMobile ? '52px' : '84px', borderRadius: '0.5rem', padding: '0.25rem', cursor: 'pointer',
                   background: isToday ? 'var(--surface-tint)' : 'var(--surface-alt)', opacity: inMonth ? 1 : 0.45,
@@ -2748,9 +2839,13 @@ function PromotionPlanner({ user }) {
                 'div',
                 {
                   key: em.id,
+                  draggable: true,
+                  onDragStart: (ev) => { ev.stopPropagation(); setDraggedEmailId(em.id); },
+                  onDragEnd: () => setDraggedEmailId(null),
                   onClick: (ev) => { ev.stopPropagation(); openEditEmail(em); },
                   title: em.subject,
-                  style: { fontSize: '0.625rem', padding: '0.0625rem 0.25rem', borderRadius: '0.25rem', background: 'var(--surface)', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+                  className: `task-card${draggedEmailId === em.id ? ' dragging' : ''}`,
+                  style: { fontSize: '0.625rem', padding: '0.0625rem 0.25rem', borderRadius: '0.25rem', background: 'var(--surface)', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'grab' },
                 },
                 em.subject
               )),
@@ -2772,13 +2867,14 @@ function PromotionPlanner({ user }) {
           'div',
           { style: { display: 'flex', gap: '0.5rem' } },
           e('button', { onClick: exportEmailsCSV, style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export CSV'),
+          e('button', { onClick: exportEmailsICS, title: 'Import into Outlook, Google Calendar, or Apple Calendar', style: { fontSize: '0.75rem', padding: '0.25rem 0.625rem', borderRadius: '0.5rem', background: 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer' } }, 'Export .ics'),
           e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
         )
       ),
       !emails && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
       emails && emailView === 'board' && emailBoard,
       emails && emailView === 'calendar' && emailCalendar,
-      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap an email to edit it, or a day to add one." : "Drag cards between columns, click a card to edit it, or click a day on the calendar to add one.")
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap an email to edit it, or a day to add one." : "Drag cards between columns, click a card to edit it, click a day on the calendar to add one, or drag a chip to a new day to reschedule it.")
     );
   }
 
