@@ -219,6 +219,7 @@ const ACTION_LABELS = {
   task_created: 'created task',
   task_updated: 'edited task',
   task_moved: 'moved task',
+  task_reassigned: 'reassigned task',
   task_deleted: 'deleted task',
   task_restored: 'restored task',
   task_purged: 'permanently deleted task',
@@ -236,6 +237,7 @@ const ACTION_LABELS = {
   email_updated: 'edited email',
   email_moved: 'moved email',
   email_approved: 'approved email',
+  email_reassigned: 'reassigned email',
   email_rescheduled: 'rescheduled email',
   email_deleted: 'deleted email',
   email_restored: 'restored email',
@@ -243,6 +245,7 @@ const ACTION_LABELS = {
   test_created: 'created test',
   test_updated: 'edited test',
   test_moved: 'moved test',
+  test_reassigned: 'reassigned test',
   test_deleted: 'deleted test',
   test_restored: 'restored test',
   test_purged: 'permanently deleted test',
@@ -314,6 +317,25 @@ function isStale(updatedAt, status, terminalStatuses) {
   if (terminalStatuses.includes(status)) return false;
   const days = daysSince(updatedAt);
   return days !== null && days >= STALE_DAYS;
+}
+
+// For the Stats tab's "time in current status" breakdown: how long, on average, items currently
+// sitting in each status have been there. Not a full cycle-time history (that would need every
+// past transition logged, not just the latest one) — just "where's the backlog piling up right
+// now," which is what actually points at a bottleneck. Items without a statusChangedAt yet
+// (anything not touched since this shipped) are silently skipped rather than guessed at.
+function avgDaysInStatus(items) {
+  const totals = {};
+  (items || []).forEach((it) => {
+    const days = it.status ? daysSince(it.statusChangedAt) : null;
+    if (days === null) return;
+    if (!totals[it.status]) totals[it.status] = { sum: 0, count: 0 };
+    totals[it.status].sum += days;
+    totals[it.status].count += 1;
+  });
+  const result = {};
+  Object.entries(totals).forEach(([status, { sum, count }]) => { result[status] = Math.round(sum / count); });
+  return result;
 }
 
 // --- Calendar month-grid helpers (all local-time; never round-trips sendDate strings
@@ -1971,6 +1993,15 @@ function PromotionPlanner({ user }) {
     (paidTests || []).forEach((t) => { if (isStale(t.updatedAt, t.status, ['Concluded'])) staleCount++; });
     (croTests || []).forEach((t) => { if (isStale(t.updatedAt, t.status, ['Concluded'])) staleCount++; });
 
+    const allTasks = [];
+    timelinePromotions.forEach((p) => (p.tasks || []).forEach((t) => allTasks.push(t)));
+    const timeInStatus = {
+      task: avgDaysInStatus(allTasks),
+      email: avgDaysInStatus(emails),
+      paid: avgDaysInStatus(paidTests),
+      cro: avgDaysInStatus(croTests),
+    };
+
     return {
       promosLive, promosInPrep, promosArchived,
       paid: testTrackerStats(paidTests),
@@ -1979,6 +2010,7 @@ function PromotionPlanner({ user }) {
       emailsSentThisMonth,
       overdue: overdueTasks + overdueEmails,
       staleCount,
+      timeInStatus,
     };
   }, [timelinePromotions, promotions, paidTests, croTests, emails]);
 
@@ -2132,6 +2164,10 @@ function PromotionPlanner({ user }) {
     return u ? (u.displayName || u.email) : email;
   }
 
+  function assigneeChangeDetail(fromEmail, toEmail) {
+    return `${assigneeLabel(fromEmail) || 'Unassigned'} → ${assigneeLabel(toEmail) || 'Unassigned'}`;
+  }
+
   function promoLabel(promoId) {
     if (!promoId) return '';
     const p = (promotions || []).find((pr) => pr.id === promoId);
@@ -2203,7 +2239,7 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       const ref = await addDoc(collection(fdb, 'promotions', promoId, 'tasks'), {
-        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(), statusChangedAt: serverTimestamp(),
       });
       await logActivity({ action: 'task_created', promoId, promoName, taskId: ref.id, taskTitle: data.title });
     } finally { setBusy(false); }
@@ -2248,7 +2284,11 @@ function PromotionPlanner({ user }) {
 
   async function moveTask(promoId, promoName, taskId, taskTitle, patch, fromStatus) {
     try {
-      await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...patch, updatedBy: actorName, updatedAt: serverTimestamp() });
+      // A drag here can change team only (same column, different lane), not status — this task's
+      // statusChangedAt should only reset when the status itself actually moved, for the
+      // "time in current status" stat below.
+      const statusChanged = patch.status !== fromStatus;
+      await updateDoc(doc(fdb, 'promotions', promoId, 'tasks', taskId), { ...patch, updatedBy: actorName, updatedAt: serverTimestamp(), ...(statusChanged ? { statusChangedAt: serverTimestamp() } : {}) });
       await logActivity({ action: 'task_moved', promoId, promoName, taskId, taskTitle, detail: `${fromStatus} → ${patch.status}` });
     } catch (err) { pushToast('Could not move this task: ' + err.message); }
   }
@@ -2342,7 +2382,7 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       const ref = await addDoc(collection(fdb, 'emails'), {
-        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(), statusChangedAt: serverTimestamp(),
       });
       await logActivity({ action: 'email_created', emailId: ref.id, taskTitle: data.subject });
     } finally { setBusy(false); }
@@ -2382,7 +2422,7 @@ function PromotionPlanner({ user }) {
   async function moveEmail(emailId, subject, status, fromStatus) {
     const justApproved = status === 'Approved' && fromStatus !== 'Approved';
     try {
-      await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp(), ...emailApprovalPatch(status, fromStatus) });
+      await updateDoc(doc(fdb, 'emails', emailId), { status, updatedBy: actorName, updatedAt: serverTimestamp(), statusChangedAt: serverTimestamp(), ...emailApprovalPatch(status, fromStatus) });
       await logActivity({ action: justApproved ? 'email_approved' : 'email_moved', emailId, taskTitle: subject, detail: `${fromStatus} → ${status}` });
     } catch (err) { pushToast('Could not move this email: ' + err.message); }
   }
@@ -2439,9 +2479,13 @@ function PromotionPlanner({ user }) {
       subject, sendDate, status, assignee, relatedPromoId, segment: segment || '', previewText: previewText || '', cta: cta || '', briefDocLink: briefDocLink || '', hubspotLink, notes,
       ...emailApprovalPatch(status, fromStatus),
     };
+    if (existing && existing.status !== status) data.statusChangedAt = serverTimestamp();
     try {
       if (id) await saveExistingEmail(id, data, status === 'Approved' && fromStatus !== 'Approved' ? 'email_approved' : undefined);
       else await addEmail(data);
+      if (existing && existing.assignee !== assignee) {
+        await logActivity({ action: 'email_reassigned', emailId: id, taskTitle: subject, detail: assigneeChangeDetail(existing.assignee, assignee) });
+      }
     } catch (err) {
       pushToast('Could not save this email: ' + err.message);
       return;
@@ -2484,7 +2528,7 @@ function PromotionPlanner({ user }) {
     setBusy(true);
     try {
       const ref = await addDoc(collection(fdb, collectionName), {
-        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(),
+        ...data, createdBy: actorName, createdAt: serverTimestamp(), updatedBy: actorName, updatedAt: serverTimestamp(), statusChangedAt: serverTimestamp(),
       });
       await logActivity({ action: 'test_created', testId: ref.id, taskTitle: data.name, promoName: label });
     } finally { setBusy(false); }
@@ -2523,7 +2567,7 @@ function PromotionPlanner({ user }) {
 
   async function moveTestItem(collectionName, label, id, name, status, fromStatus) {
     try {
-      await updateDoc(doc(fdb, collectionName, id), { status, updatedBy: actorName, updatedAt: serverTimestamp() });
+      await updateDoc(doc(fdb, collectionName, id), { status, updatedBy: actorName, updatedAt: serverTimestamp(), statusChangedAt: serverTimestamp() });
       await logActivity({ action: 'test_moved', testId: id, taskTitle: name, promoName: label, detail: `${fromStatus} → ${status}` });
     } catch (err) { pushToast('Could not move this test: ' + err.message); }
   }
@@ -2564,9 +2608,15 @@ function PromotionPlanner({ user }) {
     }
     const data = { status: testForm.status };
     config.fields.forEach((f) => { data[f.key] = testForm[f.key] || ''; });
+    const items = config.collection === 'paidTests' ? paidTests : croTests;
+    const existing = testForm.id ? (items || []).find((it) => it.id === testForm.id) : null;
+    if (existing && existing.status !== data.status) data.statusChangedAt = serverTimestamp();
     try {
       if (testForm.id) await saveExistingTestItem(config.collection, config.label, testForm.id, data);
       else await addTestItem(config.collection, config.label, data);
+      if (existing && existing.assignee !== data.assignee) {
+        await logActivity({ action: 'test_reassigned', testId: testForm.id, taskTitle: data.name, promoName: config.label, detail: assigneeChangeDetail(existing.assignee, data.assignee) });
+      }
     } catch (err) {
       pushToast('Could not save this: ' + err.message);
       return;
@@ -2637,10 +2687,15 @@ function PromotionPlanner({ user }) {
     // Only the fields the form actually edits — never forward whatever else happens to be
     // sitting on taskForm (e.g. createdBy/createdAt, which older tasks may not have at all).
     const { id, team, type, title, assignee, due, status, notes } = taskForm;
+    const existing = id ? (activePromo.tasks || []).find((t) => t.id === id) : null;
     const data = { team, type, title, assignee, due, status, notes };
+    if (existing && existing.status !== status) data.statusChangedAt = serverTimestamp();
     try {
       if (id) await saveExistingTask(activePromo.id, activePromo.name, id, data);
       else await addTask(activePromo.id, activePromo.name, data);
+      if (existing && existing.assignee !== assignee) {
+        await logActivity({ action: 'task_reassigned', promoId: activePromo.id, promoName: activePromo.name, taskId: id, taskTitle: title, detail: assigneeChangeDetail(existing.assignee, assignee) });
+      }
     } catch (err) {
       pushToast('Could not save this task: ' + err.message);
       return;
@@ -3754,7 +3809,30 @@ function PromotionPlanner({ user }) {
           { value: stats.overdue, label: 'Overdue tasks & emails (past due, not yet done)', color: stats.overdue > 0 ? 'var(--danger)' : 'var(--success)' },
           { value: stats.staleCount, label: `Stale items (no update in ${STALE_DAYS}+ days)`, color: stats.staleCount > 0 ? 'var(--warn-text)' : 'var(--success)' },
         ],
-      })
+      }),
+      (() => {
+        // Sub-groups built from each pipeline's own canonical status order (not object key
+        // order, which would jump around) — one tile per status that currently has at least one
+        // item in it. A status nobody's in right now just doesn't get a tile.
+        const groups = [
+          { title: 'Tasks', statuses: STATUSES, data: stats.timeInStatus.task },
+          { title: 'Emails', statuses: EMAIL_STATUSES, data: stats.timeInStatus.email },
+          { title: 'Paid Media', statuses: TEST_TRACKERS.paid.statuses, data: stats.timeInStatus.paid },
+          { title: 'CRO/UX', statuses: TEST_TRACKERS.cro.statuses, data: stats.timeInStatus.cro },
+        ].map((g) => ({
+          title: g.title,
+          tiles: g.statuses.filter((s) => g.data[s] !== undefined).map((s) => ({ value: `${g.data[s]}d`, label: s })),
+        }));
+        const anyData = groups.some((g) => g.tiles.length > 0);
+        return e(
+          'div',
+          null,
+          e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.375rem' } }, 'Time in current status'),
+          e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' } }, "Average days items have sat in their current column right now — where the backlog is today, not a full history."),
+          !anyData && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'No data yet — this fills in as tasks, emails, and tests get edited or moved.'),
+          groups.map((g) => g.tiles.length > 0 && e(StatGroup, { key: g.title, title: g.title, tiles: g.tiles }))
+        );
+      })()
     );
   }
 

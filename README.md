@@ -44,8 +44,14 @@ roles are set.
   many are live and logged in total, emails sent vs. planned this
   calendar month, and two team-health counts: overdue tasks/emails (past
   their due/send date and not yet marked done) and **stale items** — see
-  below. Nothing is stored separately for this — it's all computed live
-  from existing data.
+  below. Underneath that, a **Time in current status** breakdown shows,
+  for each pipeline (Tasks/Emails/Paid Media/CRO-UX), the average number
+  of days items *currently* sitting in each status column have been
+  there — not a full history of every past transition, just where things
+  are backed up right now (e.g. a task pipeline where "In review" shows
+  9 days and everything else shows 1-2 points at exactly where the real
+  bottleneck is). Nothing is stored separately for any of this — it's
+  all computed live from existing data.
 - **Boards** — a channel switcher (Promotions / Acquisition / Retention /
   Website) for the four team channels, each remembering its own
   board/timeline(/calendar) sub-view independently:
@@ -414,6 +420,14 @@ deletes it and cleared entirely on Restore. A document without them has
 simply never been deleted; nothing is backfilled or required at creation
 time. See "Recently Deleted" above for the UI this powers.
 
+Tasks, emails, and both test trackers also carry a `statusChangedAt`
+timestamp, stamped whenever `status` actually changes (dragging between
+columns, or editing Status in the form) and set once at creation — it's
+what the Stats tab's "Time in current status" reads to work out how long
+something's been sitting where it is. A document created before this
+shipped won't have one until it's next moved or edited; nothing is
+backfilled.
+
 - `promotions/{promoId}` — one document per promotion (`name`, `launchDate`,
   `endDate` (optional), `description`, `archived` (boolean), `isMainBanner`
   (boolean, see below), plus `createdBy`/`createdAt`/`updatedBy`/
@@ -549,7 +563,11 @@ time. See "Recently Deleted" above for the UI this powers.
   `promoName`, `taskTitle`, `detail`, plus `promoId`/`taskId`/`emailId`/
   `testId` where relevant, so each item's own edit screen can show a
   filtered History of just itself). Shown newest-first under the
-  **Activity** tab (last 100 entries).
+  **Activity** tab (last 100 entries). Reassigning a task, email, or test
+  to someone else logs its own `*_reassigned` entry alongside the normal
+  edit one, with a `detail` of "Old person → New person" (or "Unassigned"
+  on either side) — so a card that's been bounced around shows up in that
+  item's own History, not just as an unremarkable edit.
 - `allowlist/{email}` — access control: who can sign in (`role`: `admin` /
   `editor` / `viewer`, defaulting to `editor` if unset, plus `addedBy`/
   `addedAt` when added from the app). Bootstrapped from the Firebase
