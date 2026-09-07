@@ -296,6 +296,26 @@ function isOpenForReminder(type, status) {
   return true;
 }
 
+// How many days ahead of a due date counts as "coming up" — worth a heads-up before it's either
+// due today or already overdue, so people can get ahead of it instead of only ever reacting.
+const DUE_SOON_DAYS = 3;
+
+function daysSince(ts) {
+  if (!ts || typeof ts.toDate !== 'function') return null;
+  return Math.floor((Date.now() - ts.toDate().getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// An item is "stale" once nobody's touched it in STALE_DAYS and it isn't already in a status
+// where that's expected (a wrapped-up task, a sent email, a concluded test). This is a different
+// signal from overdue: a task due next month that hasn't moved in three weeks isn't late, but
+// it is quietly stuck — overdue catches "this is late," stale catches "this went silent."
+const STALE_DAYS = 7;
+function isStale(updatedAt, status, terminalStatuses) {
+  if (terminalStatuses.includes(status)) return false;
+  const days = daysSince(updatedAt);
+  return days !== null && days >= STALE_DAYS;
+}
+
 // --- Calendar month-grid helpers (all local-time; never round-trips sendDate strings
 // through `new Date()`, so there's no UTC/local day-shift risk when matching them up). ---
 function startOfMonth(d) {
@@ -311,6 +331,20 @@ function toDateKey(d) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+// Advances a yyyy-mm-dd date string by a week or a month — for the "Repeat next week/month"
+// quick actions on emails and tasks. Built from y/m/d parts, not new Date(dateStr): parsing a
+// date-only string with the Date constructor reads it as UTC midnight, which a negative-UTC-
+// offset viewer's local .getDate()/.setDate() can then read back as the previous day, shifting
+// the computed date by one.
+function shiftDateKey(dateStr, unit) {
+  if (!dateStr) return '';
+  const [y, m, day] = dateStr.split('-').map(Number);
+  const d = new Date(y, m - 1, day);
+  if (unit === 'week') d.setDate(d.getDate() + 7);
+  else d.setMonth(d.getMonth() + 1);
+  return toDateKey(d);
 }
 
 // 6 weeks (42 days), Monday-start, covering the month plus lead/trail days.
@@ -1879,6 +1913,13 @@ function PromotionPlanner({ user }) {
     return myWorkItems.filter((it) => it.due && (it.due === todayKey || daysUntil(it.due) < 0) && isOpenForReminder(it.type, it.status));
   }, [myWorkItems]);
 
+  // A second, softer band: due in the next few days but not today/overdue yet — a heads-up
+  // rather than an alarm, so it's shown separately rather than folded into the bell's red count.
+  const dueSoonReminders = useMemo(() => {
+    const todayKey = toDateKey(new Date());
+    return myWorkItems.filter((it) => it.due && it.due !== todayKey && daysUntil(it.due) > 0 && daysUntil(it.due) <= DUE_SOON_DAYS && isOpenForReminder(it.type, it.status));
+  }, [myWorkItems]);
+
   // A handful of headline numbers pulled from data already loaded above — nothing new to
   // maintain, no separate reporting step. "Decided" tests are Win/Loss only; TBD/Inconclusive
   // don't count toward a win rate either way. Overdue only looks at non-archived promotions —
@@ -1920,6 +1961,16 @@ function PromotionPlanner({ user }) {
     });
     const overdueEmails = (emails || []).filter((em) => em.sendDate && daysUntil(em.sendDate) < 0 && em.status !== 'Sent' && em.status !== 'Reported').length;
 
+    // Distinct from overdue above: an item can be on time and still stale (no update in a
+    // while), or overdue without being stale (edited yesterday, just still not done).
+    let staleCount = 0;
+    timelinePromotions.forEach((p) => {
+      (p.tasks || []).forEach((t) => { if (isStale(t.updatedAt, t.status, ['Reports'])) staleCount++; });
+    });
+    (emails || []).forEach((em) => { if (isStale(em.updatedAt, em.status, ['Sent', 'Reported'])) staleCount++; });
+    (paidTests || []).forEach((t) => { if (isStale(t.updatedAt, t.status, ['Concluded'])) staleCount++; });
+    (croTests || []).forEach((t) => { if (isStale(t.updatedAt, t.status, ['Concluded'])) staleCount++; });
+
     return {
       promosLive, promosInPrep, promosArchived,
       paid: testTrackerStats(paidTests),
@@ -1927,6 +1978,7 @@ function PromotionPlanner({ user }) {
       emailsThisMonth: emailsThisMonth.length,
       emailsSentThisMonth,
       overdue: overdueTasks + overdueEmails,
+      staleCount,
     };
   }, [timelinePromotions, promotions, paidTests, croTests, emails]);
 
@@ -2367,18 +2419,7 @@ function PromotionPlanner({ user }) {
   // from the current one instead of leaving it blank.
   function repeatEmailClick(unit) {
     if (!emailForm) return;
-    let nextSendDate = '';
-    if (emailForm.sendDate) {
-      // Built from y/m/d parts, not new Date(emailForm.sendDate) — same reasoning as the
-      // calendar month-grid helpers: parsing a date-only string with the Date constructor reads
-      // it as UTC midnight, which a negative-UTC-offset viewer's local .getDate() can then read
-      // back as the previous day, shifting the computed date by one.
-      const [y, m, day] = emailForm.sendDate.split('-').map(Number);
-      const d = new Date(y, m - 1, day);
-      if (unit === 'week') d.setDate(d.getDate() + 7);
-      else d.setMonth(d.getMonth() + 1);
-      nextSendDate = toDateKey(d);
-    }
+    const nextSendDate = shiftDateKey(emailForm.sendDate, unit);
     setEmailForm({ id: null, subject: emailForm.subject, sendDate: nextSendDate, status: EMAIL_STATUSES[0], assignee: emailForm.assignee, relatedPromoId: emailForm.relatedPromoId || '', segment: emailForm.segment || '', previewText: emailForm.previewText || '', cta: emailForm.cta || '', briefDocLink: '', hubspotLink: '', notes: '' });
   }
 
@@ -2575,6 +2616,16 @@ function PromotionPlanner({ user }) {
   function duplicateTaskClick() {
     if (!taskForm) return;
     setTaskForm({ id: null, team: taskForm.team, status: STATUSES[0], type: taskForm.type, title: `${taskForm.title} (copy)`, assignee: taskForm.assignee, due: '', notes: '' });
+  }
+
+  // For a task that repeats on a cadence (a weekly website QA check, a monthly reporting task)
+  // rather than getting manually re-created and re-dated every time — same pre-filled,
+  // nothing's-written-until-you-hit-Save pattern as Duplicate, but keeps the exact title (it's
+  // the next occurrence of the same task, not a distinct new one) and advances the due date.
+  function repeatTaskClick(unit) {
+    if (!taskForm) return;
+    const nextDue = shiftDateKey(taskForm.due, unit);
+    setTaskForm({ id: null, team: taskForm.team, status: STATUSES[0], type: taskForm.type, title: taskForm.title, assignee: taskForm.assignee, due: nextDue, notes: '' });
   }
 
   async function saveTask() {
@@ -2823,6 +2874,30 @@ function PromotionPlanner({ user }) {
   }
 
 
+  // One row in the reminder bell's dropdown — shared by the "due today or overdue" and "due
+  // soon" sections below, which differ only in which list feeds them and what color/label the
+  // date gets.
+  function renderReminderRow(it, dateLabel, dateColor) {
+    return e(
+      'div',
+      {
+        key: it.id,
+        role: 'button',
+        tabIndex: 0,
+        onClick: () => { it.onOpen(); setRemindersOpen(false); },
+        onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); setRemindersOpen(false); } },
+        style: { cursor: 'pointer', padding: '0.5rem 0.75rem', borderTop: '1px solid var(--border)' },
+      },
+      e(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' } },
+        e('div', { style: { fontSize: '0.8125rem', fontWeight: 600, color: PURPLE_DARK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.title),
+        e('span', { style: { fontSize: '0.6875rem', color: dateColor, flexShrink: 0, whiteSpace: 'nowrap' } }, dateLabel)
+      ),
+      e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', marginTop: '0.125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.context)
+    );
+  }
+
   const header = e(
     'div',
     {
@@ -2907,7 +2982,7 @@ function PromotionPlanner({ user }) {
           'button',
           {
             onClick: () => setRemindersOpen((o) => !o),
-            title: 'Things assigned to you that are due today or overdue',
+            title: 'Things assigned to you that are due today, overdue, or coming up soon',
             style: {
               position: 'relative', fontSize: '0.9375rem', width: '2rem', height: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
               borderRadius: '999px', background: remindersOpen ? 'var(--surface-tint)' : 'var(--surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', cursor: 'pointer',
@@ -2923,28 +2998,13 @@ function PromotionPlanner({ user }) {
         ),
         remindersOpen && e(
           'div',
-          { style: { position: 'absolute', top: 'calc(100% + 0.25rem)', right: 0, width: '18rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.5rem', boxShadow: '0 8px 24px rgba(0,0,0,0.18)', maxHeight: '20rem', overflowY: 'auto', zIndex: 40 } },
+          { style: { position: 'absolute', top: 'calc(100% + 0.25rem)', right: 0, width: '18rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0.5rem', boxShadow: '0 8px 24px rgba(0,0,0,0.18)', maxHeight: '24rem', overflowY: 'auto', zIndex: 40 } },
           e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', padding: '0.625rem 0.75rem 0.375rem' } }, 'Due today or overdue'),
           dueReminders.length === 0
             ? e('p', { style: { fontSize: '0.8125rem', color: 'var(--text-muted)', padding: '0 0.75rem 0.75rem', margin: 0 } }, "Nothing due — you're all caught up.")
-            : dueReminders.map((it) => e(
-                'div',
-                {
-                  key: it.id,
-                  role: 'button',
-                  tabIndex: 0,
-                  onClick: () => { it.onOpen(); setRemindersOpen(false); },
-                  onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); it.onOpen(); setRemindersOpen(false); } },
-                  style: { cursor: 'pointer', padding: '0.5rem 0.75rem', borderTop: '1px solid var(--border)' },
-                },
-                e(
-                  'div',
-                  { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' } },
-                  e('div', { style: { fontSize: '0.8125rem', fontWeight: 600, color: PURPLE_DARK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.title),
-                  e('span', { style: { fontSize: '0.6875rem', color: 'var(--danger)', flexShrink: 0, whiteSpace: 'nowrap' } }, it.due === toDateKey(new Date()) ? 'Today' : formatDate(it.due))
-                ),
-                e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', marginTop: '0.125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.context)
-              ))
+            : dueReminders.map((it) => renderReminderRow(it, it.due === toDateKey(new Date()) ? 'Today' : formatDate(it.due), 'var(--danger)')),
+          dueSoonReminders.length > 0 && e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', padding: '0.75rem 0.75rem 0.375rem', borderTop: '1px solid var(--border)' } }, `Due soon (next ${DUE_SOON_DAYS} days)`),
+          dueSoonReminders.map((it) => renderReminderRow(it, formatDate(it.due), 'var(--warn-text)'))
         )
       ),
       busy && e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Saving…'),
@@ -3181,7 +3241,8 @@ function PromotionPlanner({ user }) {
               { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' } },
               e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.assignee || 'Unassigned'),
               e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.due ? formatDate(task.due) : '')
-            )
+            ),
+            isStale(task.updatedAt, task.status, ['Reports']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(task.updatedAt)}d`)
           );
         });
         return e(
@@ -3476,7 +3537,8 @@ function PromotionPlanner({ user }) {
   if (section === 'mywork') {
     const todayKey = toDateKey(new Date());
     const todayItems = myWorkItems.filter((it) => it.due === todayKey);
-    const laterItems = myWorkItems.filter((it) => it.due !== todayKey);
+    const dueSoonItems = myWorkItems.filter((it) => it.due && it.due !== todayKey && daysUntil(it.due) > 0 && daysUntil(it.due) <= DUE_SOON_DAYS);
+    const laterItems = myWorkItems.filter((it) => it.due !== todayKey && !dueSoonItems.includes(it));
 
     function renderMyWorkItem(it, highlight) {
       const overdue = it.due && it.due !== todayKey && daysUntil(it.due) < 0;
@@ -3517,10 +3579,16 @@ function PromotionPlanner({ user }) {
         e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, `Due today (${todayItems.length})`),
         e('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } }, todayItems.map((it) => renderMyWorkItem(it, true)))
       ),
+      dueSoonItems.length > 0 && e(
+        'div',
+        { style: { marginBottom: '1.25rem' } },
+        e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, `Due soon — next ${DUE_SOON_DAYS} days (${dueSoonItems.length})`),
+        e('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } }, dueSoonItems.map((it) => renderMyWorkItem(it, false)))
+      ),
       laterItems.length > 0 && e(
         'div',
         null,
-        todayItems.length > 0 && e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, 'Everything else'),
+        (todayItems.length > 0 || dueSoonItems.length > 0) && e('h3', { className: 'font-display', style: { fontSize: '0.9375rem', color: PURPLE_DARK, margin: '0 0 0.625rem' } }, 'Everything else'),
         e('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.625rem' } }, laterItems.map((it) => renderMyWorkItem(it, false)))
       )
     );
@@ -3684,6 +3752,7 @@ function PromotionPlanner({ user }) {
         title: 'Team health',
         tiles: [
           { value: stats.overdue, label: 'Overdue tasks & emails (past due, not yet done)', color: stats.overdue > 0 ? 'var(--danger)' : 'var(--success)' },
+          { value: stats.staleCount, label: `Stale items (no update in ${STALE_DAYS}+ days)`, color: stats.staleCount > 0 ? 'var(--warn-text)' : 'var(--success)' },
         ],
       })
     );
@@ -3731,7 +3800,8 @@ function PromotionPlanner({ user }) {
           e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, formatDate(email.sendDate))
         ),
         promo && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `🔗 ${promo.name}`),
-        email.approvedBy && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `✓ Approved by ${email.approvedBy}`)
+        email.approvedBy && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `✓ Approved by ${email.approvedBy}`),
+        isStale(email.updatedAt, email.status, ['Sent', 'Reported']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(email.updatedAt)}d`)
       );
     }
 
@@ -3895,7 +3965,8 @@ function PromotionPlanner({ user }) {
             fontSize: '0.6875rem', padding: '0.0625rem 0.375rem', borderRadius: '999px', marginTop: '0.375rem', display: 'inline-block', background: 'var(--surface-alt)',
             color: item.outcome === 'Win' ? 'var(--success)' : item.outcome === 'Loss' ? 'var(--danger)' : 'var(--text-secondary)',
           },
-        }, item.outcome)
+        }, item.outcome),
+        isStale(item.updatedAt, item.status, ['Concluded']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(item.updatedAt)}d`)
       );
     }
 
@@ -4047,8 +4118,10 @@ function PromotionPlanner({ user }) {
           { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
           taskForm.id ? e(
             'div',
-            { style: { display: 'flex', gap: '1rem' } },
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
             e('button', { onClick: duplicateTaskClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+            e('button', { onClick: () => repeatTaskClick('week'), title: 'Same task, due date +1 week', style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Repeat next week'),
+            e('button', { onClick: () => repeatTaskClick('month'), title: 'Same task, due date +1 month', style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Repeat next month'),
             e('button', { onClick: deleteTaskClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete')
           ) : e('span'),
           e('button', { onClick: saveTask, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, 'Save')

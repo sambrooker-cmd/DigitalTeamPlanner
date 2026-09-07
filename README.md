@@ -24,7 +24,9 @@ roles are set.
 - **My Work** — everything assigned to the signed-in viewer (promotion
   tasks, emails, paid media tests, CRO/UX tests), soonest due date
   first, overdue items in red. Anything due today is pulled into its own
-  "Due today" group at the top.
+  "Due today" group at the top, and anything due in the next 3 days into
+  a "Due soon" group right below it — a heads-up on what's coming, not
+  just what's already late or due right now.
 - **Overview** — a unified, read-only timeline rolling up every
   promotion, email, paid media test, and CRO/UX test into one
   chronological view, each row tagged with a team-colored badge. Click a
@@ -40,9 +42,10 @@ roles are set.
   below: promotions live/in prep/archived, each test tracker's win rate
   (Win vs. Loss only — TBD/Inconclusive don't count either way) plus how
   many are live and logged in total, emails sent vs. planned this
-  calendar month, and a team-health count of overdue tasks and emails
-  (past their due/send date and not yet marked done). Nothing is stored
-  separately for this — it's all computed live from existing data.
+  calendar month, and two team-health counts: overdue tasks/emails (past
+  their due/send date and not yet marked done) and **stale items** — see
+  below. Nothing is stored separately for this — it's all computed live
+  from existing data.
 - **Boards** — a channel switcher (Promotions / Acquisition / Retention /
   Website) for the four team channels, each remembering its own
   board/timeline(/calendar) sub-view independently:
@@ -69,12 +72,23 @@ promotions, individual tasks, emails, and both test trackers — regardless
 of which tab you're on; picking a result jumps straight there. Next to it,
 a **reminder bell** (🔔) shows a count of anything assigned to you that's
 due today or overdue and still open — click it for the list, click an item
-to jump straight to it. This is a passive, in-app reminder only: it's just
+to jump straight to it. Below that list, a second "Due soon" section (next
+3 days) gives the same heads-up as My Work's own Due soon group, without
+counting toward the bell's red badge — that number stays reserved for
+"needs attention now." This is a passive, in-app reminder only: it's just
 `My Work` filtered down, so it only reflects reality while you actually
 have the app open — nothing is emailed or pushed to you outside the tab.
 A **theme button** next to it cycles System → Light → Dark and remembers
 the choice per-browser (dark mode otherwise just follows your OS setting
 on its own).
+
+Any task, email, or test that hasn't been edited or moved in 7+ days —
+and isn't already finished (a task's "Reports" column, an email that's
+Sent/Reported, a test that's Concluded) — shows a small "⏱ Stale" note on
+its card, with how many days it's been. This is a different signal from
+overdue: a task due next month that hasn't moved in three weeks isn't
+late, but it has gone quiet, which overdue alone won't catch. The Stats
+tab's "Team health" group also totals these up across every board.
 
 Each timeline (Promotions, Paid Media, CRO/UX) uses the same visual
 language: a light bar for the prep/build period, a solid bar for when
@@ -430,6 +444,14 @@ time. See "Recently Deleted" above for the UI this powers.
   (`team`, `type`, `title`, `assignee`, `due`, `status`, `notes`, plus the
   same attribution fields), so concurrent edits from different teams never
   overwrite each other.
+
+  For a task that repeats on its own cadence (a weekly website QA check, a
+  monthly reporting task) rather than living inside one specific
+  promotion's one-off list, **Repeat next week** / **Repeat next month**
+  sit next to Duplicate on an existing task's edit screen — same
+  pre-filled, nothing's-written-until-you-hit-Save pattern as Duplicate,
+  but keeping the exact title (it's the next occurrence of the same task)
+  and advancing the due date automatically instead of leaving it blank.
 - `emails/{emailId}` — one document per BAU/lifecycle email (`subject`,
   `previewText` (optional), `segment` (optional — the audience this send
   targets, e.g. "Past guests — Caribbean"), `cta` (optional — the primary
