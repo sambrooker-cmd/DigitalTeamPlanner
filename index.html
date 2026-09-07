@@ -128,7 +128,7 @@ import {
   getDoc, getDocs, onSnapshot, query, orderBy, where, limit, runTransaction, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import {
-  getAuth, GoogleAuthProvider, OAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
   getStorage, ref, uploadBytes, getDownloadURL, deleteObject,
@@ -148,13 +148,6 @@ const fdb = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
 const storage = getStorage(firebaseApp);
 const googleProvider = new GoogleAuthProvider();
-const microsoftProvider = new OAuthProvider('microsoft.com');
-// The Azure app registration behind this is single-tenant (Ambassador Cruise Line accounts
-// only), so Microsoft itself already rejects anyone outside the org at consent time — this
-// custom parameter just skips straight to that tenant's login instead of the generic "common"
-// account picker. Optional; sign-in still works without it. Find your tenant ID on the app
-// registration's Overview page in the Azure portal ("Directory (tenant) ID").
-// microsoftProvider.setCustomParameters({ tenant: 'YOUR_TENANT_ID_HERE' });
 
 const e = React.createElement;
 const useState = React.useState;
@@ -765,9 +758,7 @@ function downloadICS(filename, events) {
   downloadBlob(filename, eventsToICS(events), 'text/calendar;charset=utf-8;');
 }
 
-// --- Auth: Google or Microsoft sign-in, both gated by the same Firestore allowlist (keyed on
-// email, provider-agnostic — whichever one a person signs in with, their email has to already
-// be an allowlist doc or they hit the "ask an admin" screen below). ---
+// --- Auth: Google sign-in gated by a Firestore allowlist ---
 function useAuthUser() {
   const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
   useEffect(() => onAuthStateChanged(auth, (u) => setUser(u || null)), []);
@@ -799,27 +790,23 @@ function CenteredMessage({ children }) {
   );
 }
 
-// Sign-in errors worth telling the user about — a closed/cancelled popup isn't one of them (the
-// user did that on purpose), everything else (blocked popup, unauthorized domain, network
-// failure) should say something rather than leaving the button looking dead. Shared across
-// providers since Firebase uses the same error codes for both.
-function signInErrorMessage(providerLabel, err) {
-  const messages = {
-    'auth/popup-blocked': 'Your browser blocked the sign-in popup. Allow popups for this site and try again.',
-    'auth/unauthorized-domain': "This site isn't authorized for sign-in yet. Ask whoever manages this board to check the Firebase authorized domains.",
-    'auth/network-request-failed': `Couldn't reach ${providerLabel} — check your connection and try again.`,
-  };
-  return messages[err.code] || `Couldn't sign you in: ${err.message || err.code}`;
-}
+// Google sign-in errors worth telling the user about — a closed/cancelled popup isn't one of
+// them (the user did that on purpose), everything else (blocked popup, unauthorized domain,
+// network failure) should say something rather than leaving the button looking dead.
+const SIGN_IN_ERROR_MESSAGES = {
+  'auth/popup-blocked': 'Your browser blocked the sign-in popup. Allow popups for this site and try again.',
+  'auth/unauthorized-domain': "This site isn't authorized for sign-in yet. Ask whoever manages this board to check the Firebase authorized domains.",
+  'auth/network-request-failed': "Couldn't reach Google — check your connection and try again.",
+};
 const SIGN_IN_IGNORED_ERRORS = new Set(['auth/popup-closed-by-user', 'auth/cancelled-popup-request']);
 
 function SignInScreen() {
   const [error, setError] = useState('');
-  function handleSignIn(provider, providerLabel) {
+  function handleSignIn() {
     setError('');
-    signInWithPopup(auth, provider).catch((err) => {
+    signInWithPopup(auth, googleProvider).catch((err) => {
       if (SIGN_IN_IGNORED_ERRORS.has(err.code)) return;
-      setError(signInErrorMessage(providerLabel, err));
+      setError(SIGN_IN_ERROR_MESSAGES[err.code] || `Couldn't sign you in: ${err.message || err.code}`);
     });
   }
   return e(
@@ -833,18 +820,10 @@ function SignInScreen() {
     }),
     e('h1', { className: 'font-display', style: { fontSize: '1.5rem', color: PURPLE_DARK, margin: 0 } }, 'Digital Team Planner'),
     e('p', { style: { fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '22rem' } }, 'Sign in to see and edit the shared board with your team.'),
-    e(
-      'div',
-      { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%', maxWidth: '18rem' } },
-      e('button', {
-        onClick: () => handleSignIn(googleProvider, 'Google'),
-        style: { padding: '0.625rem 1.25rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' },
-      }, 'Sign in with Google'),
-      e('button', {
-        onClick: () => handleSignIn(microsoftProvider, 'Microsoft'),
-        style: { padding: '0.625rem 1.25rem', borderRadius: '0.5rem', color: 'var(--text-primary)', background: 'var(--surface)', border: '1px solid var(--border)', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer' },
-      }, 'Sign in with Microsoft')
-    ),
+    e('button', {
+      onClick: handleSignIn,
+      style: { padding: '0.625rem 1.25rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' },
+    }, 'Sign in with Google'),
     error && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', maxWidth: '22rem' } }, error)
   );
 }

@@ -141,8 +141,8 @@ tab while you read it.
 build step) backed by Firebase Firestore, Firebase Authentication, and
 Firebase Cloud Storage (for attachments), which is what gives it real
 shared, multi-user editing restricted to your team: everyone signs in with
-Google or Microsoft, and only people you've explicitly approved can see or
-edit the board — no Claude account or shared organization required.
+Google, and only people you've explicitly approved can see or edit the
+board — no Claude account or shared organization required.
 
 ### Hosting it
 
@@ -162,56 +162,24 @@ The page talks to a Firebase project (`promotions-planner`).
 [Firebase console](https://console.firebase.google.com) → **Authentication**
 → **Sign-in method** → enable **Google**.
 
-**1a. Enable Microsoft sign-in (optional).** Same screen, enable
-**Microsoft**. Unlike Google, Firebase can't generate Microsoft's
-credentials itself — it needs an **Application (client) ID** and
-**Application (client) secret** from an Azure app registration first:
-
-1. In the [Azure portal](https://portal.azure.com) → **Microsoft Entra ID**
-   → **App registrations** → **New registration**.
-2. Name it anything (e.g. "Digital Team Planner"). Under **Supported
-   account types**, pick **Accounts in this organizational directory only**
-   to restrict sign-in to your own org — anyone outside it is rejected by
-   Microsoft before they ever reach this app, on top of the allowlist check
-   below. Under **Redirect URI**, select **Web** and paste the redirect URI
-   the Firebase Microsoft sign-in dialog shows you (it's
-   `https://promotions-planner.firebaseapp.com/__/auth/handler`). **Register**.
-3. On the app's **Overview** page, copy the **Application (client) ID** —
-   that's the "Application ID" Firebase is asking for.
-4. **Certificates & secrets** → **New client secret** → give it a
-   description and expiry → **Add**. Immediately copy the **Value** column
-   (not the Secret ID) — it's only ever shown once. That's the "Application
-   Secret" Firebase wants.
-5. Paste both into the Firebase Microsoft sign-in dialog and **Save**.
-
-Optionally, put your Azure tenant ID (also on that Overview page, labeled
-"Directory (tenant) ID") into the `microsoftProvider.setCustomParameters(...)`
-line in `index.html` (search for `YOUR_TENANT_ID_HERE`, currently commented
-out) — it's not required for security (the single-tenant app registration
-already enforces that on Microsoft's side), just a nicer sign-in flow that
-skips straight to your org's login instead of a generic account picker.
-
 **1b. Authorize your GitHub Pages domain.** Still under **Authentication →
 Settings → Authorized domains**, add `<org>.github.io` (Firebase only
 allows sign-in from domains listed here — `localhost` and the project's own
 `firebaseapp.com` are added by default, but your GitHub Pages domain isn't,
 and sign-in will fail with an "unauthorized domain" error until you add it).
-This applies to both providers.
 
 **2. Approve who can access the board, and make yourself an Admin.** Under
 **Firestore Database → Data**, create a collection named `allowlist`. For
 each teammate you want to let in, add a document whose **document ID is
-their exact account email** (e.g. `sam@gmail.com` for Google, or
-`sam@ambassadorcruiseline.com` for Microsoft — whichever they'll actually
-sign in with) with a `role` field set to `admin`, `editor`, or `viewer` —
-Admins can also manage this list from inside the app (see the **Admin**
-tab, below), Editors can create/edit/delete everything, Viewers can look
-but not touch anything. A document with no `role` field defaults to
-`editor`. **Give at least one person — probably yourself — `role: "admin"`
-here**, since that's the only way to become the first Admin; everyone
-after that can be added/promoted/revoked from the Admin tab instead of
-coming back to this console. To revoke someone without the app, delete
-their document here.
+their exact Google account email** (e.g. `sam@gmail.com`) with a `role`
+field set to `admin`, `editor`, or `viewer` — Admins can also manage this
+list from inside the app (see the **Admin** tab, below), Editors can
+create/edit/delete everything, Viewers can look but not touch anything.
+A document with no `role` field defaults to `editor`. **Give at least one
+person — probably yourself — `role: "admin"` here**, since that's the only
+way to become the first Admin; everyone after that can be added/promoted/
+revoked from the Admin tab instead of coming back to this console. To
+revoke someone without the app, delete their document here.
 
 **3. Set the Firestore rules.** Under **Firestore Database → Rules**, use:
 
