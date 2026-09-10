@@ -445,11 +445,13 @@ backfilled.
   it's purely a single `isMainBanner: true` flag, visually called out
   wherever promotions appear (the promotion picker, the Promotions
   timeline, the Overview timeline) with a small "Main banner" badge and
-  a solid `PURPLE` bar throughout where a regular promotion's bar fades
-  from `PURPLE_LIGHT` to `PURPLE`, same accent family throughout rather
-  than a new color (deliberately not `PURPLE_DARK`, which is a
-  theme-adaptive text color, not a fixed bold swatch — it goes light in
-  dark mode and would make white badge text illegible on it).
+  a bolder name/weight — same accent family throughout rather than a new
+  color (deliberately not `PURPLE_DARK`, which is a theme-adaptive text
+  color, not a fixed bold swatch — it goes light in dark mode and would
+  make white badge text illegible on it). On the timeline it still fades
+  from `PURPLE_LIGHT` (prep) to `PURPLE` (live) the same as any other
+  promotion — being the main banner doesn't make it read as "live" before
+  it's actually launched.
   "Set as main banner" / "Remove as main banner" on a promotion's edit
   screen is the only way to change it, and setting it on one promotion
   automatically clears it from whichever one held it before — the app

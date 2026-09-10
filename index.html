@@ -3500,12 +3500,14 @@ function PromotionPlanner({ user }) {
       const launchLeft = dayOffsetPx(launch, range.min, dayWidth);
       const endLeft = dayOffsetPx(end, range.min, dayWidth);
       // The one main banner promotion (only promotions can be — see isMainBanner on
-      // promotions/{promoId}) gets a solid PURPLE bar throughout instead of the usual
-      // PURPLE_LIGHT-then-PURPLE fade, reading as fuller/bolder. Deliberately not PURPLE_DARK
-      // (var(--heading)) for this — that token is a theme-adaptive text ink (dark in light mode,
-      // *light* in dark mode by design), so using it as a filled background/badge color behind
-      // white text goes illegible in dark mode. PURPLE (var(--accent)) stays a solid, readable
-      // purple in both themes, same as every primary button in this app already relies on.
+      // promotions/{promoId}) gets a bolder name/badge treatment, but still the same
+      // PURPLE_LIGHT-then-PURPLE prep/live fade as every other promotion — a main banner that
+      // hasn't launched yet should still read as "not live" at a glance, same as any other promo.
+      // Deliberately not PURPLE_DARK (var(--heading)) anywhere here — that token is a
+      // theme-adaptive text ink (dark in light mode, *light* in dark mode by design), so using it
+      // as a filled background/badge color behind white text goes illegible in dark mode. PURPLE
+      // (var(--accent)) stays a solid, readable purple in both themes, same as every primary
+      // button in this app already relies on.
       const isBanner = cfg.isMainBanner ? cfg.isMainBanner(item) : false;
       return e(
         'div',
@@ -3535,7 +3537,7 @@ function PromotionPlanner({ user }) {
         e(
           'div',
           { style: { position: 'relative', height: '24px', width: `${contentWidth}px`, flexShrink: 0, borderRadius: '999px', background: 'var(--surface-alt)' } },
-          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: isBanner ? PURPLE : PURPLE_LIGHT } }),
+          e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${startLeft}px`, width: `${Math.max(launchLeft - startLeft, 4)}px`, background: PURPLE_LIGHT } }),
           e('div', { style: { position: 'absolute', height: '100%', borderRadius: '999px', left: `${launchLeft}px`, width: `${Math.max(endLeft - launchLeft, 4)}px`, background: PURPLE } }),
           e('div', { title: `${cfg.launchTitle} ${formatDate(launch)}`, style: { position: 'absolute', borderRadius: '999px', left: `${launchLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: PURPLE_DARK, border: '2px solid var(--bg)' } }),
           hasRealEnd && e('div', { title: `${cfg.endTitle} ${formatDate(end)}`, style: { position: 'absolute', borderRadius: '999px', left: `${endLeft - 5}px`, top: '-3px', width: '12px', height: '12px', background: 'var(--surface)', border: `2px solid ${PURPLE_DARK}`, boxSizing: 'border-box' } })
