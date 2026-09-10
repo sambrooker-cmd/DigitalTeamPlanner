@@ -4244,23 +4244,47 @@ function PromotionPlanner({ user }) {
           { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
           `Created by ${promoForm.createdBy || 'unknown'}${promoForm.createdAt ? ' · ' + formatDateTime(promoForm.createdAt) : ''}`
         ),
+        // Three visual tiers instead of one row of five identical-looking text buttons: creative
+        // actions (Duplicate/Save as template) stay plain text next to Save, the two state
+        // toggles become small pill chips (filled when "on," so a main-banner/archived
+        // promotion visibly shows it at a glance), and Delete sits alone below a divider so it's
+        // never a misclick away from anything else.
         e(
           'div',
-          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1.25rem' } },
-          promoForm.id ? e(
+          { style: { marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' } },
+          e(
             'div',
-            { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
-            e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
-            e('button', { onClick: saveAsTemplateClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Save as template'),
+            { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' } },
+            promoForm.id ? e(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
+              e('button', { onClick: duplicatePromoClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Duplicate'),
+              e('button', { onClick: saveAsTemplateClick, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Save as template')
+            ) : e('span'),
+            e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
+          ),
+          promoForm.id && e(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' } },
             e('button', {
               onClick: toggleMainBannerPromo,
               title: promoForm.isMainBanner ? 'Remove main banner status from this promotion' : 'Make this the one main banner promotion (replaces whichever one currently holds it)',
-              style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' },
+              style: promoForm.isMainBanner
+                ? { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE_LIGHT, color: PURPLE_TEXT, cursor: 'pointer' }
+                : { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
             }, promoForm.isMainBanner ? 'Remove as main banner' : 'Set as main banner'),
-            e('button', { onClick: toggleArchivePromo, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer' } }, promoForm.archived ? 'Unarchive' : 'Archive'),
-            e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer' } }, 'Delete promotion')
-          ) : e('span'),
-          e('button', { onClick: savePromo, style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', fontSize: '0.875rem', fontWeight: 500, background: PURPLE, border: 'none', cursor: 'pointer' } }, promoForm.id ? 'Save changes' : 'Create promotion')
+            e('button', {
+              onClick: toggleArchivePromo,
+              style: promoForm.archived
+                ? { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE_LIGHT, color: PURPLE_TEXT, cursor: 'pointer' }
+                : { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
+            }, promoForm.archived ? 'Unarchive' : 'Archive')
+          ),
+          promoForm.id && e(
+            'div',
+            { style: { borderTop: '1px solid var(--border)', paddingTop: '0.75rem' } },
+            e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Delete promotion')
+          )
         )
       ),
       promoForm.id && e(HistorySection, { entries: promoHistory.entries, error: promoHistory.error }),
