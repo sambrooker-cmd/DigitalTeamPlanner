@@ -193,6 +193,10 @@ const TEAMS = [
 
 const STATUSES = ['Briefing', 'In progress', 'In review', 'Live', 'Reports'];
 
+// A sentinel option value for the bulk "Reassign to…" select, distinguishing "clear the
+// assignee" from the placeholder's own empty value (which means "no change was picked").
+const UNASSIGNED_OPTION = '__unassigned__';
+
 const TYPES = [
   { id: 'website', label: 'Website change' },
   { id: 'email', label: 'Email' },
@@ -1316,28 +1320,36 @@ function useUndoableDelete(pushToast) {
   useEffect(() => () => { Object.values(timersRef.current).forEach(clearTimeout); }, []);
 
   function deleteWithUndo(key, label, performDelete) {
-    setPendingKeys((prev) => new Set(prev).add(key));
+    deleteManyWithUndo([key], `"${label}"`, performDelete);
+  }
+
+  // Same mechanism as deleteWithUndo, generalized to a whole batch of keys sharing one toast and
+  // one Undo action (used by bulk-select delete) — hiding 5 cards behind one "Deleted 5 tasks."
+  // toast instead of 5 separate ones stacking up.
+  function deleteManyWithUndo(keys, label, performDeletes) {
+    const batchId = `batch:${genId()}`;
+    setPendingKeys((prev) => { const next = new Set(prev); keys.forEach((k) => next.add(k)); return next; });
     const timer = setTimeout(async () => {
-      delete timersRef.current[key];
+      delete timersRef.current[batchId];
       try {
-        await performDelete();
+        await performDeletes();
       } catch (err) {
-        pushToast(`Could not delete "${label}": ` + err.message);
+        pushToast(`Could not delete ${label}: ` + err.message);
       }
-      setPendingKeys((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      setPendingKeys((prev) => { const next = new Set(prev); keys.forEach((k) => next.delete(k)); return next; });
     }, 6000);
-    timersRef.current[key] = timer;
-    pushToast(`Deleted "${label}".`, 'info', {
+    timersRef.current[batchId] = timer;
+    pushToast(`Deleted ${label}.`, 'info', {
       actionLabel: 'Undo',
       onAction: () => {
-        clearTimeout(timersRef.current[key]);
-        delete timersRef.current[key];
-        setPendingKeys((prev) => { const next = new Set(prev); next.delete(key); return next; });
+        clearTimeout(timersRef.current[batchId]);
+        delete timersRef.current[batchId];
+        setPendingKeys((prev) => { const next = new Set(prev); keys.forEach((k) => next.delete(k)); return next; });
       },
     });
   }
 
-  return { pendingKeys, deleteWithUndo };
+  return { pendingKeys, deleteWithUndo, deleteManyWithUndo };
 }
 
 function useActivityLog(active) {
@@ -1978,7 +1990,7 @@ function PromotionPlanner({ user }) {
   const actorName = user.displayName || user.email;
   const { toasts, pushToast, dismissToast } = useToasts();
   const [pendingConfirm, setPendingConfirm] = useState(null);
-  const { pendingKeys: pendingDeleteKeys, deleteWithUndo } = useUndoableDelete(pushToast);
+  const { pendingKeys: pendingDeleteKeys, deleteWithUndo, deleteManyWithUndo } = useUndoableDelete(pushToast);
   const { users, error: usersError } = useUsersDirectory();
   const myRole = useMyRole(user.email); // null while loading, then 'admin' | 'editor' | 'viewer'
   const canEdit = myRole !== 'viewer'; // optimistic while loading (null), matches the 'editor' default
@@ -2408,6 +2420,35 @@ function PromotionPlanner({ user }) {
   const [testForm, setTestForm] = useState(null);
   const [draggedTestId, setDraggedTestId] = useState(null);
 
+  // Bulk select: a "Select" toggle on a board's kanban view lets you check off several cards
+  // and move/reassign/delete them together instead of one at a time. Scoped to whichever
+  // board+sub-view is currently open — switching either one (a different team, or from board to
+  // timeline/calendar) exits selection and clears it, same reasoning as the filter reset above:
+  // a selection left over from a different board's cards wouldn't mean anything on this one.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  useEffect(() => { setSelectMode(false); setSelectedIds(new Set()); }, [activeBoard, promoView, emailView, acqView, webView]);
+  function toggleSelected(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function clearSelection() { setSelectMode(false); setSelectedIds(new Set()); }
+  // A small checkbox pinned to a card's top-right corner while Select mode is on — its own
+  // onClick stops the click from also bubbling to the card's outer onClick (which toggles
+  // selection too), so checking the box doesn't immediately re-toggle itself back off.
+  function renderSelectCheckbox(id) {
+    return e('input', {
+      type: 'checkbox',
+      checked: selectedIds.has(id),
+      onChange: () => toggleSelected(id),
+      onClick: (ev) => ev.stopPropagation(),
+      style: { position: 'absolute', top: '0.625rem', right: '0.625rem', width: '1rem', height: '1rem', cursor: 'pointer' },
+    });
+  }
+
   const activePromo = promotions ? (promotions.find((p) => p.id === activePromoId) || promotions[0]) : null;
 
   function progressFor(promo) {
@@ -2457,7 +2498,40 @@ function PromotionPlanner({ user }) {
       filtersActive && e('button', {
         onClick: () => { setBoardSearch(''); setBoardAssignee(''); },
         style: { fontSize: '0.75rem', padding: '0.375rem 0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' },
-      }, 'Clear filters')
+      }, 'Clear filters'),
+      canEdit && e('button', {
+        onClick: () => (selectMode ? clearSelection() : setSelectMode(true)),
+        style: { fontSize: '0.75rem', padding: '0.375rem 0.75rem', borderRadius: '0.375rem', marginLeft: 'auto', color: selectMode ? PURPLE_TEXT : 'var(--text-muted)', background: selectMode ? PURPLE_LIGHT : 'none', border: selectMode ? `1px solid ${PURPLE}` : '1px solid var(--border)', cursor: 'pointer' },
+      }, selectMode ? 'Cancel' : 'Select')
+    );
+  }
+
+  // The bar that appears once at least one card is checked off in Select mode — move, reassign,
+  // or delete every selected card at once instead of one at a time. `onMoveStatus`/`onReassign`
+  // are single-shot action selects (not bound to persistent state, unlike the filter dropdowns
+  // above): picking a value applies it immediately and the control snaps back to its placeholder,
+  // same pattern as the mobile per-card move select uses.
+  function renderBulkActionBar(statuses, onMoveStatus, onReassign, onDelete) {
+    if (!selectMode || selectedIds.size === 0) return null;
+    return e(
+      'div',
+      { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.625rem', padding: '0.625rem 0.875rem', borderRadius: '0.5rem', background: PURPLE_LIGHT, border: `1px solid ${PURPLE}`, marginBottom: '1rem' } },
+      e('span', { style: { fontSize: '0.8125rem', fontWeight: 600, color: PURPLE_DARK } }, `${selectedIds.size} selected`),
+      e(
+        'select',
+        { value: '', onChange: (ev) => { if (ev.target.value) onMoveStatus(ev.target.value); }, style: { ...inputStyle, width: 'auto' } },
+        e('option', { value: '' }, 'Move to…'),
+        statuses.map((s) => e('option', { key: s, value: s }, s))
+      ),
+      e(
+        'select',
+        { value: '', onChange: (ev) => { if (ev.target.value) onReassign(ev.target.value === UNASSIGNED_OPTION ? '' : ev.target.value); }, style: { ...inputStyle, width: 'auto' } },
+        e('option', { value: '' }, 'Reassign to…'),
+        e('option', { value: UNASSIGNED_OPTION }, 'Unassigned'),
+        (users || []).slice().sort((a, b) => (a.displayName || a.email).localeCompare(b.displayName || b.email)).map((u) => e('option', { key: u.email, value: u.email }, u.displayName || u.email))
+      ),
+      e('button', { onClick: onDelete, style: { fontSize: '0.8125rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.375rem 0.5rem' } }, 'Delete'),
+      e('button', { onClick: clearSelection, style: { fontSize: '0.8125rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.375rem 0.5rem', marginLeft: 'auto' } }, 'Clear')
     );
   }
 
@@ -2811,6 +2885,37 @@ function PromotionPlanner({ user }) {
     setDraggedEmailId(null);
   }
 
+  // --- Bulk actions (emails): same shape as the task versions above.
+  function selectedEmails() {
+    return (emails || []).filter((em) => selectedIds.has(em.id));
+  }
+  async function bulkMoveEmails(status) {
+    const targets = selectedEmails();
+    clearSelection();
+    for (const em of targets) moveEmailToStatus(em, status);
+  }
+  async function bulkReassignEmails(assignee) {
+    const targets = selectedEmails();
+    clearSelection();
+    for (const em of targets) {
+      if (em.assignee === assignee) continue;
+      try {
+        await updateDoc(doc(fdb, 'emails', em.id), { assignee, updatedBy: actorName, updatedAt: serverTimestamp() });
+        await logActivity({ action: 'email_reassigned', emailId: em.id, taskTitle: em.subject, detail: assigneeChangeDetail(em.assignee, assignee) });
+      } catch (err) { pushToast(`Could not reassign "${em.subject}": ` + err.message); }
+    }
+  }
+  function bulkDeleteEmails() {
+    const targets = selectedEmails();
+    if (!targets.length) return;
+    clearSelection();
+    const keys = targets.map((em) => `email:${em.id}`);
+    const label = targets.length === 1 ? `"${targets[0].subject}"` : `${targets.length} emails`;
+    deleteManyWithUndo(keys, label, async () => {
+      for (const em of targets) await removeEmail(em.id, em.subject);
+    });
+  }
+
   function handleCalendarEmailDrop(dateKey) {
     if (!draggedEmailId) return;
     const email = (emails || []).find((em) => em.id === draggedEmailId);
@@ -2948,6 +3053,40 @@ function PromotionPlanner({ user }) {
     setDraggedTestId(null);
   }
 
+  // --- Bulk actions (test trackers): same shape as the task/email versions above, parameterized
+  // on `config`/`items` since paidTests and croTests share this one code path (see config/items
+  // at the test tracker board's own render call site, same as moveTestItemToStatus does).
+  function selectedTestItems(items) {
+    return (items || []).filter((it) => selectedIds.has(it.id));
+  }
+  async function bulkMoveTestItems(config, items, status) {
+    const targets = selectedTestItems(items);
+    clearSelection();
+    for (const it of targets) moveTestItemToStatus(config, it, status);
+  }
+  async function bulkReassignTestItems(config, items, assignee) {
+    const targets = selectedTestItems(items);
+    clearSelection();
+    for (const it of targets) {
+      if (it.assignee === assignee) continue;
+      try {
+        await updateDoc(doc(fdb, config.collection, it.id), { assignee, updatedBy: actorName, updatedAt: serverTimestamp() });
+        await logActivity({ action: 'test_reassigned', testId: it.id, taskTitle: it.name, promoName: config.label, detail: assigneeChangeDetail(it.assignee, assignee) });
+      } catch (err) { pushToast(`Could not reassign "${it.name}": ` + err.message); }
+    }
+  }
+  function bulkDeleteTestItems(config, items) {
+    const targets = selectedTestItems(items);
+    if (!targets.length) return;
+    clearSelection();
+    const keyPrefix = config.collection === 'paidTests' ? 'paidTest' : 'croTest';
+    const keys = targets.map((it) => `${keyPrefix}:${it.id}`);
+    const label = targets.length === 1 ? `"${targets[0].name}"` : `${targets.length} tests`;
+    deleteManyWithUndo(keys, label, async () => {
+      for (const it of targets) await removeTestItem(config.collection, config.label, it.id, it.name);
+    });
+  }
+
   function moveTaskToStatus(task, status) {
     if (!activePromo || task.status === status) return;
     moveTask(activePromo.id, activePromo.name, task.id, task.title, { team: task.team, status }, task.status);
@@ -2960,6 +3099,39 @@ function PromotionPlanner({ user }) {
       moveTask(activePromo.id, activePromo.name, draggedTaskId, task.title, { team, status }, task.status);
     }
     setDraggedTaskId(null);
+  }
+
+  // --- Bulk actions (tasks): apply one action to every currently-selected task at once, then
+  // drop out of Select mode. Selection is always scoped to the active promotion's own tasks, so
+  // there's no cross-promotion ambiguity about which tasks "selectedIds" refers to.
+  function selectedTasks() {
+    return (activePromo ? activePromo.tasks : []).filter((t) => selectedIds.has(t.id));
+  }
+  async function bulkMoveTasks(status) {
+    const targets = selectedTasks();
+    clearSelection();
+    for (const t of targets) if (t.status !== status) await moveTask(activePromo.id, activePromo.name, t.id, t.title, { team: t.team, status }, t.status);
+  }
+  async function bulkReassignTasks(assignee) {
+    const targets = selectedTasks();
+    clearSelection();
+    for (const t of targets) {
+      if (t.assignee === assignee) continue;
+      try {
+        await updateDoc(doc(fdb, 'promotions', activePromo.id, 'tasks', t.id), { assignee, updatedBy: actorName, updatedAt: serverTimestamp() });
+        await logActivity({ action: 'task_reassigned', promoId: activePromo.id, promoName: activePromo.name, taskId: t.id, taskTitle: t.title, detail: assigneeChangeDetail(t.assignee, assignee) });
+      } catch (err) { pushToast(`Could not reassign "${t.title}": ` + err.message); }
+    }
+  }
+  function bulkDeleteTasks() {
+    const targets = selectedTasks();
+    if (!targets.length) return;
+    clearSelection();
+    const keys = targets.map((t) => `task:${t.id}`);
+    const label = targets.length === 1 ? `"${targets[0].title}"` : `${targets.length} tasks`;
+    deleteManyWithUndo(keys, label, async () => {
+      for (const t of targets) await removeTask(activePromo.id, activePromo.name, t.id, t.title);
+    });
   }
 
   function openNewTask(team, status) {
@@ -3591,13 +3763,14 @@ function PromotionPlanner({ user }) {
             'div',
             {
               key: task.id,
-              draggable: canEdit,
+              draggable: canEdit && !selectMode,
               onDragStart: () => setDraggedTaskId(task.id),
               onDragEnd: () => setDraggedTaskId(null),
-              onClick: () => openEditTask(task),
+              onClick: () => (selectMode ? toggleSelected(task.id) : openEditTask(task)),
               className: `task-card${draggedTaskId === task.id ? ' dragging' : ''}`,
-              style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', opacity: dim ? 0.3 : 1, border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: team.color, borderLeftStyle: 'solid' },
+              style: { position: 'relative', cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', opacity: dim ? 0.3 : 1, border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: team.color, borderLeftStyle: 'solid' },
             },
+            selectMode && canEdit && renderSelectCheckbox(task.id),
             e('div', { style: { fontSize: '0.75rem', fontWeight: 500, marginBottom: '0.25rem', color: PURPLE_TEXT } }, type ? type.label : task.type),
             e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', lineHeight: 1.35 } }, task.title),
             status === 'Reports' && task.notes && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.35 } }, task.notes),
@@ -3758,6 +3931,7 @@ function PromotionPlanner({ user }) {
         ),
         taskErrors[activePromo.id] && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', marginBottom: '1rem' } }, `Couldn't load tasks for this promotion: ${taskErrors[activePromo.id]}. What's shown below may be missing cards.`),
         renderBoardFilterBar(),
+        renderBulkActionBar(STATUSES, bulkMoveTasks, bulkReassignTasks, bulkDeleteTasks),
         typeFilters,
         board,
         linkedWorkSection,
@@ -4177,13 +4351,14 @@ function PromotionPlanner({ user }) {
         'div',
         {
           key: email.id,
-          draggable: canEdit,
+          draggable: canEdit && !selectMode,
           onDragStart: () => setDraggedEmailId(email.id),
           onDragEnd: () => setDraggedEmailId(null),
-          onClick: () => openEditEmail(email),
+          onClick: () => (selectMode ? toggleSelected(email.id) : openEditEmail(email)),
           className: `task-card${draggedEmailId === email.id ? ' dragging' : ''}`,
-          style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: PURPLE, borderLeftStyle: 'solid' },
+          style: { position: 'relative', cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: PURPLE, borderLeftStyle: 'solid' },
         },
+        selectMode && canEdit && renderSelectCheckbox(email.id),
         e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', fontWeight: 500, lineHeight: 1.35 } }, email.subject),
         e(
           'div',
@@ -4322,6 +4497,7 @@ function PromotionPlanner({ user }) {
       ),
       !emails && e(ColumnsSkeleton, { count: 6, isMobile }),
       emails && emailView === 'board' && renderBoardFilterBar(),
+      emails && emailView === 'board' && renderBulkActionBar(EMAIL_STATUSES, bulkMoveEmails, bulkReassignEmails, bulkDeleteEmails),
       emails && emailView === 'board' && emailBoard,
       emails && emailView === 'calendar' && emailCalendar,
       e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap an email to edit it, use the status menu on a card to move it, or tap a day to add one." : "Drag cards between columns, click a card to edit it, click a day on the calendar to add one, or drag a chip to a new day to reschedule it.")
@@ -4339,13 +4515,14 @@ function PromotionPlanner({ user }) {
         'div',
         {
           key: item.id,
-          draggable: canEdit,
+          draggable: canEdit && !selectMode,
           onDragStart: () => setDraggedTestId(item.id),
           onDragEnd: () => setDraggedTestId(null),
-          onClick: () => openEditTest(config, item),
+          onClick: () => (selectMode ? toggleSelected(item.id) : openEditTest(config, item)),
           className: `task-card${draggedTestId === item.id ? ' dragging' : ''}`,
-          style: { cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: PURPLE, borderLeftStyle: 'solid' },
+          style: { position: 'relative', cursor: 'pointer', background: 'var(--surface)', borderRadius: '0.5rem', padding: '0.75rem', border: '1px solid var(--border)', borderLeftWidth: '3px', borderLeftColor: PURPLE, borderLeftStyle: 'solid' },
         },
+        selectMode && canEdit && renderSelectCheckbox(item.id),
         e('div', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', fontWeight: 500, lineHeight: 1.35 } }, item.name),
         item.hypothesis && e('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.35 } }, item.hypothesis),
         e(
@@ -4431,6 +4608,7 @@ function PromotionPlanner({ user }) {
       ),
       !items && e('div', { style: { padding: subView === 'timeline' ? (isMobile ? '0 1rem' : '0 2rem') : undefined } }, e(ColumnsSkeleton, { count: config.statuses.length, isMobile })),
       items && subView === 'board' && renderBoardFilterBar(),
+      items && subView === 'board' && renderBulkActionBar(config.statuses, (status) => bulkMoveTestItems(config, items, status), (assignee) => bulkReassignTestItems(config, items, assignee), () => bulkDeleteTestItems(config, items)),
       items && subView === 'board' && testBoard,
       items && subView === 'board' && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap a test to edit it, or use the status menu on a card to move it." : "Drag cards between columns, or click one to edit it."),
       items && subView === 'timeline' && testTimeline

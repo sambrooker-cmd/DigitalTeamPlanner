@@ -81,6 +81,19 @@ roles are set.
   (admin only)" option for anyone else). It only appears for people who
   can actually edit the board — a Viewer's cards don't get one, same as
   they don't get drag-and-drop.
+
+  A **Select** button next to the filter bar turns on bulk selection —
+  check off any combination of cards, across teams and columns, and a
+  toolbar appears to **move**, **reassign**, or **delete** every checked
+  card in one action instead of one at a time. Moving and reassigning
+  respect the same rules as doing it one card at a time (only an Admin
+  can bulk-move an email into Approved); a bulk delete gets the same
+  Undo toast as a single delete, just covering the whole batch — one
+  "Deleted 5 tasks." notification with one Undo, not five separate ones.
+  Switching team, board, or sub-view (board/timeline/calendar) exits
+  Select mode and drops whatever was checked, same as the filter reset
+  above. Like the mobile status dropdown, Select only shows up for
+  people who can actually edit the board.
 - **Activity** — a live change log across everything above, plus a
   **Recently Deleted** sub-view for restoring (or permanently deleting)
   anything soft-deleted — see below.
