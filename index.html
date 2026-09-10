@@ -110,9 +110,29 @@
   .task-card { transition: transform .12s ease, box-shadow .12s ease; }
   .task-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(58,18,69,0.10); }
   .task-card.dragging { opacity: 0.35; }
+  /* A deliberately visible thin scrollbar for the height-capped History/Comments/Attachments
+     lists — the browser default is thin enough on most platforms that truncated content (e.g. a
+     comment cut off mid-thread) can read as missing/broken rather than "scroll for more." */
+  .scroll-list { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
+  .scroll-list::-webkit-scrollbar { width: 7px; }
+  .scroll-list::-webkit-scrollbar-track { background: transparent; }
+  .scroll-list::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 999px; }
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+  /* Viewers hit disabled controls everywhere (every <fieldset disabled> in the app) with no
+     visual cue at all otherwise — a "Save changes" button that's fully purple and looks perfectly
+     clickable, but silently does nothing, reads as broken rather than as a permission boundary.
+     :disabled also matches a control disabled only via an ancestor <fieldset disabled>, so this
+     one rule covers every screen without per-component changes. An inline style="opacity:..." a
+     component already sets for its own reasons (e.g. a busy/uploading state) still wins, since
+     inline styles always beat a stylesheet rule regardless of selector — this only fills the gap
+     where nothing else was already dimming it.
+  */
+  button:disabled, input:disabled, select:disabled, textarea:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 </style>
 </head>
@@ -1310,9 +1330,32 @@ function useItemHistory(field, id) {
   return { entries, error };
 }
 
+// Whether a height-capped scrollable element is actually overflowing right now — re-measured
+// whenever watchKey changes (typically an item count), since a scrollbar's own visibility varies
+// too much across OS/browser (some platforms only draw one on hover, some reserve no track width
+// at all) to rely on it as the sole "there's more below" signal. Paired with ScrollFade below.
+function useListOverflow(ref, deps) {
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    setOverflowing(!!el && el.scrollHeight - el.clientHeight > 1);
+  }, deps);
+  return overflowing;
+}
+
+// A soft fade over the bottom edge of a height-capped list, shown only while it's actually
+// overflowing — makes "scroll for more" visually obvious even when the browser's own scrollbar
+// is invisible at rest, so a cut-off entry reads as "there's more below," not as missing content.
+function ScrollFade({ show }) {
+  if (!show) return null;
+  return e('div', { style: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '1.5rem', background: 'linear-gradient(to bottom, transparent, var(--surface))', pointerEvents: 'none', borderRadius: '0 0 0.5rem 0.5rem' } });
+}
+
 // Collapsed by default so it doesn't crowd an already-full modal — click to expand.
 function HistorySection({ entries, error }) {
   const [open, setOpen] = useState(false);
+  const listRef = useRef(null);
+  const overflowing = useListOverflow(listRef, [entries ? entries.length : 0, open]);
   return e(
     'div',
     { style: { marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' } },
@@ -1322,11 +1365,16 @@ function HistorySection({ entries, error }) {
     }, `${open ? '▾' : '▸'} History${entries && entries.length ? ` (${entries.length})` : ''}`),
     open && e(
       'div',
-      { style: { marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '10rem', overflowY: 'auto' } },
-      error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load history: ${error}`),
-      !entries && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
-      entries && entries.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No history recorded yet.'),
-      entries && entries.length > 0 && entries.map((entry) => e(ActivityEntryRow, { key: entry.id, entry, compact: true }))
+      { style: { position: 'relative', marginTop: '0.5rem' } },
+      e(
+        'div',
+        { ref: listRef, className: 'scroll-list', style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '10rem', overflowY: 'auto' } },
+        error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load history: ${error}`),
+        !entries && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
+        entries && entries.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No history recorded yet.'),
+        entries && entries.length > 0 && entries.map((entry) => e(ActivityEntryRow, { key: entry.id, entry, compact: true }))
+      ),
+      e(ScrollFade, { show: overflowing })
     )
   );
 }
@@ -1428,6 +1476,8 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
     }
   }, [comments]);
 
+  const overflowing = useListOverflow(listRef, [commentCount, open]);
+
   // Keep the newest comment in view — otherwise posting one while the thread is scrolled up
   // (or just opening a long thread) leaves it out of sight in the fixed-height scroll box.
   useEffect(() => {
@@ -1435,7 +1485,7 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
   }, [commentCount]);
 
   async function submit() {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || !canEdit) return;
     setBusy(true);
     try {
       const trimmed = text.trim();
@@ -1464,43 +1514,51 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
       onClick: () => setOpen((o) => !o),
       style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: open ? '0.5rem' : 0, display: 'flex', alignItems: 'center', gap: '0.25rem' },
     }, `${open ? '▾' : '▸'} Comments${commentCount ? ` (${commentCount})` : ''}`),
-    // A fieldset here, not on the div above — disabling reaches Post/Delete (real form
-    // controls) without touching the collapse toggle, which stays clickable for Viewers so they
-    // can still read an existing thread even though they can't add to it.
+    // Explicit disabled props on Post/Delete below, not a wrapping <fieldset disabled> — a
+    // fieldset created already-disabled in the same commit as its children (which is what
+    // happens here, since this whole block only mounts once `open` flips true) doesn't reliably
+    // propagate the disabled state to those children in every browser; verified via a real
+    // rendered check, not assumed. The collapse toggle above stays clickable for Viewers either
+    // way, so they can still read an existing thread even though they can't add to it.
     open && e(
-      'fieldset',
-      { disabled: !canEdit, style: fieldsetResetStyle },
+      'div',
+      null,
       error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load comments: ${error}`),
       !comments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
       comments && comments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No comments yet.'),
       comments && comments.length > 0 && e(
         'div',
-        { ref: listRef, style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
-        comments.map((c) => {
-          const youWereMentioned = (c.mentions || []).includes(currentUserEmail);
-          return e(
-            'div',
-            {
-              key: c.id,
-              style: {
-                fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem',
-                background: youWereMentioned ? 'var(--surface-tint)' : 'var(--surface-alt)',
-                border: youWereMentioned ? `1px solid ${PURPLE}` : '1px solid transparent',
-              },
-            },
-            e(
+        { style: { position: 'relative', marginBottom: '0.75rem' } },
+        e(
+          'div',
+          { ref: listRef, className: 'scroll-list', style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto' } },
+          comments.map((c) => {
+            const youWereMentioned = (c.mentions || []).includes(currentUserEmail);
+            return e(
               'div',
-              { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
-              e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
-              e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
-            ),
-            e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, renderCommentText(c.text, users)),
-            c.byEmail === currentUserEmail && e('button', {
-              onClick: () => removeComment(c.id),
-              style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
-            }, 'Delete')
-          );
-        })
+              {
+                key: c.id,
+                style: {
+                  fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem',
+                  background: youWereMentioned ? 'var(--surface-tint)' : 'var(--surface-alt)',
+                  border: youWereMentioned ? `1px solid ${PURPLE}` : '1px solid transparent',
+                },
+              },
+              e(
+                'div',
+                { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
+                e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
+                e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
+              ),
+              e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, renderCommentText(c.text, users)),
+              canEdit && c.byEmail === currentUserEmail && e('button', {
+                onClick: () => removeComment(c.id),
+                style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
+              }, 'Delete')
+            );
+          })
+        ),
+        e(ScrollFade, { show: overflowing })
       ),
       e(
         'div',
@@ -1509,14 +1567,15 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
           style: { ...inputStyle, flex: 1, minHeight: '2.25rem', resize: 'vertical' },
           rows: 2,
           value: text,
+          disabled: !canEdit,
           placeholder: 'Add a comment… (Shift+Enter for a new line, @Name to mention someone)',
           onChange: (ev) => setText(ev.target.value),
           onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } },
         }),
         e('button', {
           onClick: submit,
-          disabled: busy,
-          style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1, flexShrink: 0 },
+          disabled: busy || !canEdit,
+          style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy || !canEdit ? 'default' : 'pointer', opacity: busy || !canEdit ? 0.6 : 1, flexShrink: 0 },
         }, 'Post')
       )
     )
@@ -1562,6 +1621,7 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
   const { attachments, error } = useAttachments(pathSegments);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
+  const listRef = useRef(null);
   const attachmentCount = attachments ? attachments.length : 0;
 
   // Collapsed by default — like History and Comments — but auto-opens itself the first time
@@ -1577,6 +1637,8 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
       autoOpenedRef.current = true;
     }
   }, [attachments]);
+
+  const overflowing = useListOverflow(listRef, [attachmentCount, open]);
 
   async function handleFiles(files) {
     if (!files || !files.length) return;
@@ -1636,37 +1698,46 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
         onChange: (ev) => { handleFiles(ev.target.files); ev.target.value = ''; },
       })
     ),
-    // A fieldset here (not on the div above) so Delete stays reachable-but-inert for Viewers
-    // while the collapse toggle above stays clickable regardless of role.
+    // Explicit `canEdit` guard on the per-item Delete button below, not a wrapping <fieldset
+    // disabled> — a fieldset created already-disabled in the same commit as its children (which
+    // is what happens here, since this whole block only mounts once `open` flips true) doesn't
+    // reliably propagate the disabled state to those children in every browser; verified via a
+    // real rendered check, not assumed. The collapse toggle above stays clickable for Viewers
+    // either way, so they can still see existing attachments even though they can't remove them.
     open && e(
-      'fieldset',
-      { disabled: !canEdit, style: fieldsetResetStyle },
+      'div',
+      null,
       error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load attachments: ${error}`),
       !attachments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
       attachments && attachments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No attachments yet.'),
       attachments && attachments.length > 0 && e(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '14rem', overflowY: 'auto' } },
-        attachments.map((a) => e(
+        { style: { position: 'relative' } },
+        e(
           'div',
-          {
-            key: a.id,
-            style: { display: 'flex', alignItems: 'center', gap: '0.625rem', fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem', background: 'var(--surface-alt)' },
-          },
-          a.contentType && a.contentType.startsWith('image/')
-            ? e('img', { src: a.url, alt: a.name, style: { width: '2.5rem', height: '2.5rem', objectFit: 'cover', borderRadius: '0.375rem', flexShrink: 0 } })
-            : e('span', { style: { fontSize: '1.25rem', flexShrink: 0 } }, '📎'),
-          e(
+          { ref: listRef, className: 'scroll-list', style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '14rem', overflowY: 'auto' } },
+          attachments.map((a) => e(
             'div',
-            { style: { flex: 1, minWidth: 0 } },
-            e('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', style: { color: 'var(--text-primary)', fontWeight: 500, wordBreak: 'break-word' } }, a.name),
-            e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)' } }, `${formatFileSize(a.size)} · ${a.by || 'Someone'} · ${formatDateTime(a.at)}`)
-          ),
-          a.byEmail === currentUserEmail && e('button', {
-            onClick: () => removeAttachment(a),
-            style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 },
-          }, 'Delete')
-        ))
+            {
+              key: a.id,
+              style: { display: 'flex', alignItems: 'center', gap: '0.625rem', fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem', background: 'var(--surface-alt)' },
+            },
+            a.contentType && a.contentType.startsWith('image/')
+              ? e('img', { src: a.url, alt: a.name, style: { width: '2.5rem', height: '2.5rem', objectFit: 'cover', borderRadius: '0.375rem', flexShrink: 0 } })
+              : e('span', { style: { fontSize: '1.25rem', flexShrink: 0 } }, '📎'),
+            e(
+              'div',
+              { style: { flex: 1, minWidth: 0 } },
+              e('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', style: { color: 'var(--text-primary)', fontWeight: 500, wordBreak: 'break-word' } }, a.name),
+              e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)' } }, `${formatFileSize(a.size)} · ${a.by || 'Someone'} · ${formatDateTime(a.at)}`)
+            ),
+            canEdit && a.byEmail === currentUserEmail && e('button', {
+              onClick: () => removeAttachment(a),
+              style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 },
+            }, 'Delete')
+          ))
+        ),
+        e(ScrollFade, { show: overflowing })
       )
     )
   );

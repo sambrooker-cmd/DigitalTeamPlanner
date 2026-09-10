@@ -119,7 +119,11 @@ default so an item with a long thread or a pile of files doesn't make its
 edit screen enormous just to look at it — each auto-expands itself the
 first time it turns out to already have something in it, so existing
 content is never hidden behind an extra click, but stays collapsed
-thereafter if you close it again.
+thereafter if you close it again. Once expanded, each of these lists (and
+History's own) caps its own height and scrolls internally rather than
+stretching the whole screen — a soft fade over the bottom edge shows up
+whenever there's more to scroll to, so a long thread reads as "scroll for
+more," not as content that's gone missing.
 Deleting a promotion, task, email, or
 test shows an **Undo** on its toast for a few seconds — nothing changes in
 Firestore until that window passes, so Undo is exact, not a re-creation.
