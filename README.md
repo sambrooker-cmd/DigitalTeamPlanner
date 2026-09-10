@@ -104,15 +104,22 @@ prepped" vs. "actually running" is always visually distinct.
 Every promotion, task, email, and test can be **duplicated** from its edit
 modal — it pre-fills a new, unsaved copy (dates and result fields cleared,
 nothing else) so a repeat promotion or test doesn't mean re-typing the whole
-form; nothing is written until you adjust it and hit Save. Each of those
-also carries its own **comment thread**, for back-and-forth that would
-otherwise overwrite the single free-text notes field — type `@Name` (or
-just `@FirstName`) to mention a teammate; it's highlighted in the thread and
-the comment itself is visually called out for them, though nothing is
-pushed to them outside the app yet. Each edit screen also has an
-**Attachments** section — "+ Add file" to upload a document or image
+form; nothing is written until you adjust it and hit Save. Description/notes
+fields grow with what you type instead of a fixed small box — no dragging a
+resize handle to see what you wrote. Each edit screen also has a **comment
+thread**, for back-and-forth that would otherwise overwrite the single
+free-text notes field — type `@Name` (or just `@FirstName`) to mention a
+teammate; it's highlighted in the thread and the comment itself is visually
+called out for them, though nothing is pushed to them outside the app yet —
+and an **Attachments** section, "+ Add file" to upload a document or image
 (10MB cap), shown as a thumbnail for images or a filename link otherwise,
 with size/uploader/date; only the person who uploaded a file can delete it.
+Like History (below), both Comments and Attachments are collapsed by
+default so an item with a long thread or a pile of files doesn't make its
+edit screen enormous just to look at it — each auto-expands itself the
+first time it turns out to already have something in it, so existing
+content is never hidden behind an extra click, but stays collapsed
+thereafter if you close it again.
 Deleting a promotion, task, email, or
 test shows an **Undo** on its toast for a few seconds — nothing changes in
 Firestore until that window passes, so Undo is exact, not a re-creation.

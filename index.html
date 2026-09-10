@@ -516,6 +516,27 @@ function Field({ label, required, children }) {
 
 const inputStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', fontSize: '0.875rem', outline: 'none', fontFamily: 'inherit', background: 'var(--surface)', color: 'var(--text-primary)' };
 
+// A textarea that grows with its content instead of relying on the browser's tiny manual resize
+// handle — recalculates on every value change (including the first render, so an existing long
+// description shows in full immediately, not just after the next keystroke) and caps out at
+// maxHeight, past which it scrolls internally rather than growing the whole modal.
+function AutoGrowTextarea({ value, onChange, placeholder, minHeight, maxHeight }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight || Infinity)}px`;
+  }, [value, maxHeight]);
+  return e('textarea', {
+    ref,
+    style: { ...inputStyle, minHeight: `${minHeight || 96}px`, maxHeight: maxHeight ? `${maxHeight}px` : undefined, overflowY: 'auto', resize: 'none' },
+    value: value || '',
+    onChange,
+    placeholder,
+  });
+}
+
 // Wraps a group of form fields/buttons for Viewers: a disabled <fieldset> makes every input,
 // select, textarea, and button inside it inert in one shot (a native HTML behavior — no need to
 // thread `disabled` through each field individually). `display: contents` keeps it invisible to
@@ -650,7 +671,7 @@ function renderTestFieldInput(field, value, onChange, users, promotions) {
     return e('select', { style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) }, field.options.map((o) => e('option', { key: o, value: o }, o)));
   }
   if (field.type === 'textarea') {
-    return e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: value || '', onChange: (ev) => onChange(ev.target.value), placeholder: field.placeholder || '' });
+    return e(AutoGrowTextarea, { value, onChange: (ev) => onChange(ev.target.value), placeholder: field.placeholder || '', maxHeight: 240 });
   }
   if (field.type === 'date') {
     return e('input', { type: 'date', style: inputStyle, value: value || '', onChange: (ev) => onChange(ev.target.value) });
@@ -1387,12 +1408,25 @@ function mentionedEmails(text, users) {
 // Reusable comment thread, dropped into any modal for an already-saved item (pathSegments
 // points at that item's own 'comments' subcollection). Anyone on the allowlist can read every
 // comment; only the author can delete their own.
-function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users, pushToast }) {
+function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users, pushToast, canEdit }) {
   const { comments, error } = useComments(pathSegments);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const listRef = useRef(null);
   const commentCount = comments ? comments.length : 0;
+
+  // Collapsed by default — like History — but auto-opens itself the first time there turns out
+  // to already be a conversation here, so existing comments are never hidden behind an extra
+  // click. Only fires once: if someone manually collapses it again after that, a new comment
+  // arriving shouldn't force it back open.
+  const [open, setOpen] = useState(false);
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!autoOpenedRef.current && comments && comments.length > 0) {
+      setOpen(true);
+      autoOpenedRef.current = true;
+    }
+  }, [comments]);
 
   // Keep the newest comment in view — otherwise posting one while the thread is scrolled up
   // (or just opening a long thread) leaves it out of sight in the fixed-height scroll box.
@@ -1426,55 +1460,65 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
   return e(
     'div',
     { style: { marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' } },
-    e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.5rem' } }, 'Comments'),
-    error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load comments: ${error}`),
-    !comments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
-    comments && comments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No comments yet.'),
-    comments && comments.length > 0 && e(
-      'div',
-      { ref: listRef, style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
-      comments.map((c) => {
-        const youWereMentioned = (c.mentions || []).includes(currentUserEmail);
-        return e(
-          'div',
-          {
-            key: c.id,
-            style: {
-              fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem',
-              background: youWereMentioned ? 'var(--surface-tint)' : 'var(--surface-alt)',
-              border: youWereMentioned ? `1px solid ${PURPLE}` : '1px solid transparent',
-            },
-          },
-          e(
+    e('button', {
+      onClick: () => setOpen((o) => !o),
+      style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: open ? '0.5rem' : 0, display: 'flex', alignItems: 'center', gap: '0.25rem' },
+    }, `${open ? '▾' : '▸'} Comments${commentCount ? ` (${commentCount})` : ''}`),
+    // A fieldset here, not on the div above — disabling reaches Post/Delete (real form
+    // controls) without touching the collapse toggle, which stays clickable for Viewers so they
+    // can still read an existing thread even though they can't add to it.
+    open && e(
+      'fieldset',
+      { disabled: !canEdit, style: fieldsetResetStyle },
+      error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load comments: ${error}`),
+      !comments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      comments && comments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No comments yet.'),
+      comments && comments.length > 0 && e(
+        'div',
+        { ref: listRef, style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '12rem', overflowY: 'auto', marginBottom: '0.75rem' } },
+        comments.map((c) => {
+          const youWereMentioned = (c.mentions || []).includes(currentUserEmail);
+          return e(
             'div',
-            { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
-            e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
-            e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
-          ),
-          e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, renderCommentText(c.text, users)),
-          c.byEmail === currentUserEmail && e('button', {
-            onClick: () => removeComment(c.id),
-            style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
-          }, 'Delete')
-        );
-      })
-    ),
-    e(
-      'div',
-      { style: { display: 'flex', gap: '0.5rem', alignItems: 'flex-end' } },
-      e('textarea', {
-        style: { ...inputStyle, flex: 1, minHeight: '2.25rem', resize: 'vertical' },
-        rows: 2,
-        value: text,
-        placeholder: 'Add a comment… (Shift+Enter for a new line, @Name to mention someone)',
-        onChange: (ev) => setText(ev.target.value),
-        onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } },
-      }),
-      e('button', {
-        onClick: submit,
-        disabled: busy,
-        style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1, flexShrink: 0 },
-      }, 'Post')
+            {
+              key: c.id,
+              style: {
+                fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem',
+                background: youWereMentioned ? 'var(--surface-tint)' : 'var(--surface-alt)',
+                border: youWereMentioned ? `1px solid ${PURPLE}` : '1px solid transparent',
+              },
+            },
+            e(
+              'div',
+              { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' } },
+              e('span', { style: { fontWeight: 600, color: PURPLE_DARK } }, c.by || 'Someone'),
+              e('span', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)', flexShrink: 0 } }, formatDateTime(c.at))
+            ),
+            e('div', { style: { color: 'var(--text-primary)', marginTop: '0.125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, renderCommentText(c.text, users)),
+            c.byEmail === currentUserEmail && e('button', {
+              onClick: () => removeComment(c.id),
+              style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '0.25rem' },
+            }, 'Delete')
+          );
+        })
+      ),
+      e(
+        'div',
+        { style: { display: 'flex', gap: '0.5rem', alignItems: 'flex-end' } },
+        e('textarea', {
+          style: { ...inputStyle, flex: 1, minHeight: '2.25rem', resize: 'vertical' },
+          rows: 2,
+          value: text,
+          placeholder: 'Add a comment… (Shift+Enter for a new line, @Name to mention someone)',
+          onChange: (ev) => setText(ev.target.value),
+          onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } },
+        }),
+        e('button', {
+          onClick: submit,
+          disabled: busy,
+          style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1, flexShrink: 0 },
+        }, 'Post')
+      )
     )
   );
 }
@@ -1514,10 +1558,25 @@ function formatFileSize(bytes) {
 // (pathSegments points at that item's own 'attachments' subcollection). Storage object path
 // mirrors pathSegments so rules can gate on the same allowlist as everything else. Anyone on
 // the allowlist can read/upload; only the uploader can delete their own file.
-function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, pushToast }) {
+function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, pushToast, canEdit }) {
   const { attachments, error } = useAttachments(pathSegments);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
+  const attachmentCount = attachments ? attachments.length : 0;
+
+  // Collapsed by default — like History and Comments — but auto-opens itself the first time
+  // there turn out to already be files here, so existing attachments are never hidden behind an
+  // extra click. "+ Add file" stays visible either way (unlike Comments' reply box, adding a
+  // file doesn't need the existing list in view to be useful) — uploading one while collapsed
+  // will itself trigger this same auto-open once the new file shows up.
+  const [open, setOpen] = useState(false);
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!autoOpenedRef.current && attachments && attachments.length > 0) {
+      setOpen(true);
+      autoOpenedRef.current = true;
+    }
+  }, [attachments]);
 
   async function handleFiles(files) {
     if (!files || !files.length) return;
@@ -1559,8 +1618,11 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
     e(
       'div',
       { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' } },
-      e('div', { style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' } }, 'Attachments'),
-      e(
+      e('button', {
+        onClick: () => setOpen((o) => !o),
+        style: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: '0.25rem' },
+      }, `${open ? '▾' : '▸'} Attachments${attachmentCount ? ` (${attachmentCount})` : ''}`),
+      canEdit && e(
         'button',
         {
           onClick: () => fileInputRef.current && fileInputRef.current.click(),
@@ -1569,37 +1631,43 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
         },
         uploading ? 'Uploading…' : '+ Add file'
       ),
-      e('input', {
+      canEdit && e('input', {
         ref: fileInputRef, type: 'file', style: { display: 'none' },
         onChange: (ev) => { handleFiles(ev.target.files); ev.target.value = ''; },
       })
     ),
-    error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load attachments: ${error}`),
-    !attachments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
-    attachments && attachments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No attachments yet.'),
-    attachments && attachments.length > 0 && e(
-      'div',
-      { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
-      attachments.map((a) => e(
+    // A fieldset here (not on the div above) so Delete stays reachable-but-inert for Viewers
+    // while the collapse toggle above stays clickable regardless of role.
+    open && e(
+      'fieldset',
+      { disabled: !canEdit, style: fieldsetResetStyle },
+      error && e('p', { style: { fontSize: '0.75rem', color: 'var(--danger)' } }, `Couldn't load attachments: ${error}`),
+      !attachments && !error && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      attachments && attachments.length === 0 && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, 'No attachments yet.'),
+      attachments && attachments.length > 0 && e(
         'div',
-        {
-          key: a.id,
-          style: { display: 'flex', alignItems: 'center', gap: '0.625rem', fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem', background: 'var(--surface-alt)' },
-        },
-        a.contentType && a.contentType.startsWith('image/')
-          ? e('img', { src: a.url, alt: a.name, style: { width: '2.5rem', height: '2.5rem', objectFit: 'cover', borderRadius: '0.375rem', flexShrink: 0 } })
-          : e('span', { style: { fontSize: '1.25rem', flexShrink: 0 } }, '📎'),
-        e(
+        { style: { display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '14rem', overflowY: 'auto' } },
+        attachments.map((a) => e(
           'div',
-          { style: { flex: 1, minWidth: 0 } },
-          e('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', style: { color: 'var(--text-primary)', fontWeight: 500, wordBreak: 'break-word' } }, a.name),
-          e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)' } }, `${formatFileSize(a.size)} · ${a.by || 'Someone'} · ${formatDateTime(a.at)}`)
-        ),
-        a.byEmail === currentUserEmail && e('button', {
-          onClick: () => removeAttachment(a),
-          style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 },
-        }, 'Delete')
-      ))
+          {
+            key: a.id,
+            style: { display: 'flex', alignItems: 'center', gap: '0.625rem', fontSize: '0.8125rem', borderRadius: '0.5rem', padding: '0.5rem 0.625rem', background: 'var(--surface-alt)' },
+          },
+          a.contentType && a.contentType.startsWith('image/')
+            ? e('img', { src: a.url, alt: a.name, style: { width: '2.5rem', height: '2.5rem', objectFit: 'cover', borderRadius: '0.375rem', flexShrink: 0 } })
+            : e('span', { style: { fontSize: '1.25rem', flexShrink: 0 } }, '📎'),
+          e(
+            'div',
+            { style: { flex: 1, minWidth: 0 } },
+            e('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', style: { color: 'var(--text-primary)', fontWeight: 500, wordBreak: 'break-word' } }, a.name),
+            e('div', { style: { fontSize: '0.6875rem', color: 'var(--text-muted)' } }, `${formatFileSize(a.size)} · ${a.by || 'Someone'} · ${formatDateTime(a.at)}`)
+          ),
+          a.byEmail === currentUserEmail && e('button', {
+            onClick: () => removeAttachment(a),
+            style: { fontSize: '0.6875rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 },
+          }, 'Delete')
+        ))
+      )
     )
   );
 }
@@ -4186,7 +4254,7 @@ function PromotionPlanner({ user }) {
           e(Field, { label: 'Due date' }, e('input', { type: 'date', style: inputStyle, value: taskForm.due, onChange: (ev) => setTaskForm({ ...taskForm, due: ev.target.value }) }))
         ),
         e(Field, { label: 'Status' }, e('select', { style: inputStyle, value: taskForm.status, onChange: (ev) => setTaskForm({ ...taskForm, status: ev.target.value }) }, STATUSES.map((s) => e('option', { key: s, value: s }, s)))),
-        e(Field, { label: taskForm.status === 'Reports' ? 'Detail on performance' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: taskForm.notes, onChange: (ev) => setTaskForm({ ...taskForm, notes: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'What happened, key metrics, what to repeat or change next time' : '' })),
+        e(Field, { label: taskForm.status === 'Reports' ? 'Detail on performance' : 'Notes' }, e(AutoGrowTextarea, { value: taskForm.notes, onChange: (ev) => setTaskForm({ ...taskForm, notes: ev.target.value }), placeholder: taskForm.status === 'Reports' ? 'What happened, key metrics, what to repeat or change next time' : '', maxHeight: 240 })),
         taskForm.id && e(
           'p',
           { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
@@ -4208,12 +4276,8 @@ function PromotionPlanner({ user }) {
         )
       ),
       taskForm.id && e(HistorySection, { entries: taskHistory.entries, error: taskHistory.error }),
-      e(
-        'fieldset',
-        { disabled: !canEdit, style: fieldsetResetStyle },
-        taskForm.id && activePromo && e(AttachmentsSection, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-        taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
-      )
+      taskForm.id && activePromo && e(AttachmentsSection, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast, canEdit }),
+      taskForm.id && activePromo && e(CommentsThread, { pathSegments: ['promotions', activePromo.id, 'tasks', taskForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast, canEdit })
     );
   }
 
@@ -4232,23 +4296,43 @@ function PromotionPlanner({ user }) {
           promoTemplates.map((t) => e('option', { key: t.id, value: t.id }, `${t.name} (${(t.tasks || []).length} task${(t.tasks || []).length === 1 ? '' : 's'})`))
         )),
         e(Field, { label: 'Promotion name', required: true }, e('input', { style: inputStyle, value: promoForm.name, onChange: (ev) => setPromoForm({ ...promoForm, name: ev.target.value }), placeholder: 'e.g. Black Friday Sale' })),
+        // The promotion's own status flags, right under its name rather than buried below the
+        // Save button — these are "what kind of promotion is this" facts you want at a glance
+        // the moment the card opens, same as a status badge next to a title anywhere else.
+        // Filled with a soft purple when "on" so the state itself is visible, not just the label.
+        promoForm.id && e(
+          'div',
+          { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '-0.375rem', marginBottom: '0.75rem' } },
+          e('button', {
+            onClick: toggleMainBannerPromo,
+            title: promoForm.isMainBanner ? 'Remove main banner status from this promotion' : 'Make this the one main banner promotion (replaces whichever one currently holds it)',
+            style: promoForm.isMainBanner
+              ? { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE_LIGHT, color: PURPLE_TEXT, cursor: 'pointer' }
+              : { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
+          }, promoForm.isMainBanner ? 'Remove as main banner' : 'Set as main banner'),
+          e('button', {
+            onClick: toggleArchivePromo,
+            style: promoForm.archived
+              ? { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE_LIGHT, color: PURPLE_TEXT, cursor: 'pointer' }
+              : { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
+          }, promoForm.archived ? 'Unarchive' : 'Archive')
+        ),
         e(
           'div',
           { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' } },
           e(Field, { label: 'Launch date', required: true }, e('input', { type: 'date', style: inputStyle, value: promoForm.launchDate, onChange: (ev) => setPromoForm({ ...promoForm, launchDate: ev.target.value }) })),
           e(Field, { label: 'End date (optional)' }, e('input', { type: 'date', style: inputStyle, min: promoForm.launchDate || undefined, value: promoForm.endDate || '', onChange: (ev) => setPromoForm({ ...promoForm, endDate: ev.target.value }) }))
         ),
-        e(Field, { label: 'Description' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?" })),
+        e(Field, { label: 'Description' }, e(AutoGrowTextarea, { value: promoForm.description, onChange: (ev) => setPromoForm({ ...promoForm, description: ev.target.value }), placeholder: "What's the offer and who is it for?", maxHeight: 320 })),
         promoForm.id && e(
           'p',
           { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
           `Created by ${promoForm.createdBy || 'unknown'}${promoForm.createdAt ? ' · ' + formatDateTime(promoForm.createdAt) : ''}`
         ),
-        // Three visual tiers instead of one row of five identical-looking text buttons: creative
-        // actions (Duplicate/Save as template) stay plain text next to Save, the two state
-        // toggles become small pill chips (filled when "on," so a main-banner/archived
-        // promotion visibly shows it at a glance), and Delete sits alone below a divider so it's
-        // never a misclick away from anything else.
+        // Duplicate/Save as template stay plain text next to Save changes — low-risk, creative
+        // actions. Delete sits alone below a divider so it's never a misclick away from anything
+        // else (the state toggles moved up top, next to the name, so this row is just the two
+        // actions plus Delete now).
         e(
           'div',
           { style: { marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' } },
@@ -4265,35 +4349,14 @@ function PromotionPlanner({ user }) {
           ),
           promoForm.id && e(
             'div',
-            { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' } },
-            e('button', {
-              onClick: toggleMainBannerPromo,
-              title: promoForm.isMainBanner ? 'Remove main banner status from this promotion' : 'Make this the one main banner promotion (replaces whichever one currently holds it)',
-              style: promoForm.isMainBanner
-                ? { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE_LIGHT, color: PURPLE_TEXT, cursor: 'pointer' }
-                : { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
-            }, promoForm.isMainBanner ? 'Remove as main banner' : 'Set as main banner'),
-            e('button', {
-              onClick: toggleArchivePromo,
-              style: promoForm.archived
-                ? { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: `1px solid ${PURPLE}`, background: PURPLE_LIGHT, color: PURPLE_TEXT, cursor: 'pointer' }
-                : { fontSize: '0.75rem', padding: '0.3125rem 0.75rem', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer' },
-            }, promoForm.archived ? 'Unarchive' : 'Archive')
-          ),
-          promoForm.id && e(
-            'div',
             { style: { borderTop: '1px solid var(--border)', paddingTop: '0.75rem' } },
             e('button', { onClick: deletePromoClick, style: { fontSize: '0.875rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Delete promotion')
           )
         )
       ),
       promoForm.id && e(HistorySection, { entries: promoHistory.entries, error: promoHistory.error }),
-      e(
-        'fieldset',
-        { disabled: !canEdit, style: fieldsetResetStyle },
-        promoForm.id && e(AttachmentsSection, { pathSegments: ['promotions', promoForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-        promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
-      )
+      promoForm.id && e(AttachmentsSection, { pathSegments: ['promotions', promoForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast, canEdit }),
+      promoForm.id && e(CommentsThread, { pathSegments: ['promotions', promoForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast, canEdit })
     );
   }
 
@@ -4336,7 +4399,7 @@ function PromotionPlanner({ user }) {
           e(Field, { label: 'Brief doc link (optional)' }, e('input', { style: inputStyle, value: emailForm.briefDocLink || '', onChange: (ev) => setEmailForm({ ...emailForm, briefDocLink: ev.target.value }), placeholder: 'Google Doc, Figma, etc.' })),
           e(Field, { label: 'HubSpot link (optional)' }, e('input', { style: inputStyle, value: emailForm.hubspotLink || '', onChange: (ev) => setEmailForm({ ...emailForm, hubspotLink: ev.target.value }), placeholder: 'https://app.hubspot.com/...' }))
         ),
-        e(Field, { label: emailForm.status === 'Reported' ? 'Performance notes' : 'Notes' }, e('textarea', { style: { ...inputStyle, minHeight: '70px' }, value: emailForm.notes, onChange: (ev) => setEmailForm({ ...emailForm, notes: ev.target.value }), placeholder: emailForm.status === 'Reported' ? 'Open rate, click rate, bookings attributed, what to repeat or change' : '' })),
+        e(Field, { label: emailForm.status === 'Reported' ? 'Performance notes' : 'Notes' }, e(AutoGrowTextarea, { value: emailForm.notes, onChange: (ev) => setEmailForm({ ...emailForm, notes: ev.target.value }), placeholder: emailForm.status === 'Reported' ? 'Open rate, click rate, bookings attributed, what to repeat or change' : '', maxHeight: 240 })),
         emailForm.id && e(
           'p',
           { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.25rem' } },
@@ -4359,12 +4422,8 @@ function PromotionPlanner({ user }) {
         )
       ),
       emailForm.id && e(HistorySection, { entries: emailHistory.entries, error: emailHistory.error }),
-      e(
-        'fieldset',
-        { disabled: !canEdit, style: fieldsetResetStyle },
-        emailForm.id && e(AttachmentsSection, { pathSegments: ['emails', emailForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-        emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
-      )
+      emailForm.id && e(AttachmentsSection, { pathSegments: ['emails', emailForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast, canEdit }),
+      emailForm.id && e(CommentsThread, { pathSegments: ['emails', emailForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast, canEdit })
     );
   }
 
@@ -4398,12 +4457,8 @@ function PromotionPlanner({ user }) {
         )
       ),
       testForm.id && e(HistorySection, { entries: testHistory.entries, error: testHistory.error }),
-      e(
-        'fieldset',
-        { disabled: !canEdit, style: fieldsetResetStyle },
-        testForm.id && e(AttachmentsSection, { pathSegments: [testForm.__collection, testForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast }),
-        testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast })
-      )
+      testForm.id && e(AttachmentsSection, { pathSegments: [testForm.__collection, testForm.id, 'attachments'], currentUserEmail: user.email, currentUserName: actorName, pushToast, canEdit }),
+      testForm.id && e(CommentsThread, { pathSegments: [testForm.__collection, testForm.id, 'comments'], currentUserEmail: user.email, currentUserName: actorName, users, pushToast, canEdit })
     );
   }
 
