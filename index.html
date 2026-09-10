@@ -134,6 +134,16 @@
     opacity: 0.55;
     cursor: not-allowed;
   }
+  /* Loading-skeleton shimmer — a moving highlight sweeping across --border-tinted blocks, used
+     while the initial promotions/board data is still loading so the first paint reads as "app is
+     drawing itself" rather than a blank page or a lone "Loading…" string. */
+  @keyframes skeleton-shimmer { 0% { background-position: -32rem 0; } 100% { background-position: 32rem 0; } }
+  .skeleton {
+    border-radius: 0.5rem;
+    background: linear-gradient(90deg, var(--surface-alt) 25%, var(--border) 50%, var(--surface-alt) 75%);
+    background-size: 32rem 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  }
 </style>
 </head>
 <body>
@@ -477,6 +487,31 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+// A styled stand-in for window.confirm() — the native browser dialog looks jarring dropped into
+// an otherwise fully custom UI, especially next to a modal that's already open behind it.
+// `pending` is null when nothing's awaiting confirmation, or { message, confirmLabel, onConfirm }
+// while a destructive action is. The confirm button is an outlined (not filled) danger style —
+// var(--danger) inverts to a *lighter* red in dark mode (it's a text-ink token, not a fixed
+// swatch), which would go low-contrast as white-on-red the way var(--heading) did as a badge
+// background elsewhere in this app; text/border-only sidesteps that instead of risking it again.
+function ConfirmModal({ pending, onCancel }) {
+  if (!pending) return null;
+  return e(
+    Modal,
+    { title: 'Please confirm', onClose: onCancel },
+    e('p', { style: { fontSize: '0.875rem', color: 'var(--text-primary)', marginBottom: '1.25rem' } }, pending.message),
+    e(
+      'div',
+      { style: { display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' } },
+      e('button', { onClick: onCancel, style: { fontSize: '0.875rem', color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.5rem 1rem' } }, 'Cancel'),
+      e('button', {
+        onClick: () => { onCancel(); pending.onConfirm(); },
+        style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--danger)', fontSize: '0.875rem', fontWeight: 600, background: 'var(--surface)', border: '1px solid var(--danger)', cursor: 'pointer' },
+      }, pending.confirmLabel || 'Delete')
+    )
+  );
+}
+
 // One row in TemplatesModal — local text state so a rename commits on blur/Enter, not on every
 // keystroke (that would be a Firestore write per character typed).
 function TemplateRow({ template, onRename, onDelete }) {
@@ -670,6 +705,28 @@ function renderAssigneeSelect(value, onChange, users) {
     e('option', { value: '' }, 'Unassigned'),
     !hasCurrent && e('option', { value }, value),
     options.map((u) => e('option', { key: u.email, value: u.email }, u.displayName || u.email))
+  );
+}
+
+// A compact native <select> for moving a card straight to a different status, shown on mobile
+// board cards alongside (not replacing) the drag-and-drop the desktop board uses — native HTML5
+// drag-and-drop is triggered by mouse events and doesn't respond to touch at all, so phones and
+// tablets need a non-drag way to move a card between columns. `isOptionDisabled`, if given, lets
+// a caller grey out one status (e.g. email's Approved, admin-only) the same way the edit modal's
+// own Status dropdown already does.
+function renderMobileMoveSelect(currentStatus, statuses, onMove, isOptionDisabled) {
+  return e(
+    'select',
+    {
+      value: currentStatus,
+      onClick: (ev) => ev.stopPropagation(),
+      onChange: (ev) => { ev.stopPropagation(); onMove(ev.target.value); },
+      style: { fontSize: '0.75rem', padding: '0.25rem 0.375rem', borderRadius: '0.375rem', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', marginTop: '0.5rem', width: '100%' },
+    },
+    statuses.map((s) => {
+      const disabled = isOptionDisabled ? isOptionDisabled(s) : false;
+      return e('option', { key: s, value: s, disabled }, disabled ? `${s} (admin only)` : s);
+    })
   );
 }
 
@@ -1460,6 +1517,7 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
   const { comments, error } = useComments(pathSegments);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
   const listRef = useRef(null);
   const commentCount = comments ? comments.length : 0;
 
@@ -1498,13 +1556,16 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
     }
   }
 
-  async function removeComment(id) {
-    if (!window.confirm('Delete this comment?')) return;
+  async function performRemoveComment(id) {
     try {
       await deleteDoc(doc(fdb, ...pathSegments, id));
     } catch (err) {
       pushToast('Could not delete comment: ' + err.message);
     }
+  }
+
+  function removeComment(id) {
+    setPendingConfirm({ message: 'Delete this comment?', onConfirm: () => performRemoveComment(id) });
   }
 
   return e(
@@ -1578,7 +1639,8 @@ function CommentsThread({ pathSegments, currentUserEmail, currentUserName, users
           style: { padding: '0.5rem 0.875rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.8125rem', fontWeight: 500, border: 'none', cursor: busy || !canEdit ? 'default' : 'pointer', opacity: busy || !canEdit ? 0.6 : 1, flexShrink: 0 },
         }, 'Post')
       )
-    )
+    ),
+    e(ConfirmModal, { pending: pendingConfirm, onCancel: () => setPendingConfirm(null) })
   );
 }
 
@@ -1620,6 +1682,7 @@ function formatFileSize(bytes) {
 function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, pushToast, canEdit }) {
   const { attachments, error } = useAttachments(pathSegments);
   const [uploading, setUploading] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
   const fileInputRef = useRef(null);
   const listRef = useRef(null);
   const attachmentCount = attachments ? attachments.length : 0;
@@ -1664,14 +1727,17 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
     }
   }
 
-  async function removeAttachment(a) {
-    if (!window.confirm(`Delete "${a.name}"?`)) return;
+  async function performRemoveAttachment(a) {
     try {
       await deleteDoc(doc(fdb, ...pathSegments, a.id));
       await deleteObject(ref(storage, a.storagePath)).catch(() => {});
     } catch (err) {
       pushToast('Could not delete attachment: ' + err.message);
     }
+  }
+
+  function removeAttachment(a) {
+    setPendingConfirm({ message: `Delete "${a.name}"?`, onConfirm: () => performRemoveAttachment(a) });
   }
 
   return e(
@@ -1739,7 +1805,8 @@ function AttachmentsSection({ pathSegments, currentUserEmail, currentUserName, p
         ),
         e(ScrollFade, { show: overflowing })
       )
-    )
+    ),
+    e(ConfirmModal, { pending: pendingConfirm, onCancel: () => setPendingConfirm(null) })
   );
 }
 
@@ -1754,6 +1821,7 @@ function AdminSection({ currentUserEmail, users, pushToast, isMobile }) {
   const [newEmail, setNewEmail] = useState('');
   const [newRole, setNewRole] = useState('editor');
   const [busy, setBusy] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
 
   function displayNameFor(email) {
     const u = (users || []).find((u2) => u2.email === email);
@@ -1787,14 +1855,17 @@ function AdminSection({ currentUserEmail, users, pushToast, isMobile }) {
     }
   }
 
-  async function removeEntry(email) {
-    if (email === currentUserEmail) { pushToast("You can't revoke your own access."); return; }
-    if (!window.confirm(`Revoke access for ${email}? They'll be signed out of the board.`)) return;
+  async function performRemoveEntry(email) {
     try {
       await deleteDoc(doc(fdb, 'allowlist', email));
     } catch (err) {
       pushToast('Could not revoke access: ' + err.message);
     }
+  }
+
+  function removeEntry(email) {
+    if (email === currentUserEmail) { pushToast("You can't revoke your own access."); return; }
+    setPendingConfirm({ message: `Revoke access for ${email}? They'll be signed out of the board.`, onConfirm: () => performRemoveEntry(email) });
   }
 
   return e(
@@ -1851,6 +1922,48 @@ function AdminSection({ currentUserEmail, users, pushToast, isMobile }) {
           }, 'Revoke')
         );
       })
+    ),
+    e(ConfirmModal, { pending: pendingConfirm, onCancel: () => setPendingConfirm(null) })
+  );
+}
+
+// A board's worth of column-shaped skeleton placeholders — shared by the full-page boot skeleton
+// below and by the inline "Loading…" states on the Emails and Test Tracker boards, so every
+// kanban-shaped loading state in the app reads the same way instead of a bare "Loading…" string.
+// Purely decorative shapes: none of this data is real, so it's plain divs, not real board cards.
+function ColumnsSkeleton({ count, isMobile }) {
+  const columnCount = isMobile ? 1 : count;
+  return e(
+    'div',
+    { style: { display: 'flex', flexWrap: 'wrap', gap: '1rem' } },
+    Array.from({ length: columnCount }).map((_, i) => e(
+      'div',
+      { key: i, style: { flex: isMobile ? '1 1 100%' : '1 1 0', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '0.75rem' } },
+      e('div', { className: 'skeleton', style: { height: '1.125rem', width: '55%' } }),
+      [0, 1, 2].map((c) => e('div', { key: c, className: 'skeleton', style: { height: '4.5rem' } }))
+    ))
+  );
+}
+
+// Loading skeleton shown once, before `promotions` has loaded for the first time — a lightweight
+// mimic of the real app shell (sidebar + a board's worth of columns and cards) rather than a bare
+// "Loading…" string, so the first paint already reads as "this is Digital Team Planner, still
+// drawing itself" instead of a blank or unfamiliar screen.
+function BoardSkeleton({ isMobile }) {
+  return e(
+    'div',
+    { style: { width: '100%', minHeight: '100vh', display: 'flex', background: 'var(--bg)' } },
+    !isMobile && e(
+      'div',
+      { style: { width: '13rem', flexShrink: 0, padding: '0.75rem 0.5rem', borderRight: '1px solid var(--border)', background: 'var(--surface)', display: 'flex', flexDirection: 'column', gap: '0.5rem' } },
+      e('div', { className: 'skeleton', style: { height: '1.75rem', width: '70%', marginBottom: '0.75rem' } }),
+      [0, 1, 2, 3, 4, 5].map((i) => e('div', { key: i, className: 'skeleton', style: { height: '2rem' } }))
+    ),
+    e(
+      'div',
+      { style: { flex: 1, minWidth: 0, padding: isMobile ? '1rem' : '1.5rem 2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' } },
+      e('div', { className: 'skeleton', style: { height: '2rem', width: '16rem', maxWidth: '100%' } }),
+      e(ColumnsSkeleton, { count: 4, isMobile })
     )
   );
 }
@@ -1864,6 +1977,7 @@ function PromotionPlanner({ user }) {
   const seededRef = useRef(false);
   const actorName = user.displayName || user.email;
   const { toasts, pushToast, dismissToast } = useToasts();
+  const [pendingConfirm, setPendingConfirm] = useState(null);
   const { pendingKeys: pendingDeleteKeys, deleteWithUndo } = useUndoableDelete(pushToast);
   const { users, error: usersError } = useUsersDirectory();
   const myRole = useMyRole(user.email); // null while loading, then 'admin' | 'editor' | 'viewer'
@@ -2254,6 +2368,13 @@ function PromotionPlanner({ user }) {
     timelineScrollRef.current.scrollLeft = Math.max(dayOffsetPx(new Date(), r.min, dayWidth) - 80, 0);
   }, [section, activeBoard, promoView, acqView, webView, rollupItems, timelinePromotions, paidTests, croTests, isMobile]);
   const [showArchived, setShowArchived] = useState(false);
+  // A lightweight search + assignee filter for whichever team board is currently open — the
+  // kanban boards themselves had no way to narrow down to "just my stuff" (Overview already had
+  // this). Shared across all four boards rather than one state pair per board, cleared whenever
+  // you switch boards so a filter left on one board doesn't silently apply to another.
+  const [boardSearch, setBoardSearch] = useState('');
+  const [boardAssignee, setBoardAssignee] = useState('');
+  useEffect(() => { setBoardSearch(''); setBoardAssignee(''); }, [activeBoard]);
   const [promoPickerOpen, setPromoPickerOpen] = useState(false);
   const promoPickerRef = useRef(null);
   useEffect(() => {
@@ -2305,6 +2426,39 @@ function PromotionPlanner({ user }) {
 
   function assigneeChangeDetail(fromEmail, toEmail) {
     return `${assigneeLabel(fromEmail) || 'Unassigned'} → ${assigneeLabel(toEmail) || 'Unassigned'}`;
+  }
+
+  // A search box + assignee dropdown shown above each team board's card view, using the shared
+  // boardSearch/boardAssignee state — same filter shape Overview already has, just scoped to a
+  // single board's own items instead of everything at once.
+  function matchesBoardFilter(searchableText, assignee) {
+    if (boardAssignee && assignee !== boardAssignee) return false;
+    if (boardSearch.trim() && !searchableText.toLowerCase().includes(boardSearch.trim().toLowerCase())) return false;
+    return true;
+  }
+
+  function renderBoardFilterBar() {
+    const filtersActive = !!(boardSearch || boardAssignee);
+    return e(
+      'div',
+      { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' } },
+      e('input', {
+        value: boardSearch,
+        onChange: (ev) => setBoardSearch(ev.target.value),
+        placeholder: 'Search this board…',
+        style: { ...inputStyle, width: 'auto', maxWidth: '14rem' },
+      }),
+      e(
+        'select',
+        { value: boardAssignee, onChange: (ev) => setBoardAssignee(ev.target.value), style: { ...inputStyle, width: 'auto', maxWidth: '12rem' } },
+        e('option', { value: '' }, 'Everyone'),
+        (users || []).slice().sort((a, b) => (a.displayName || a.email).localeCompare(b.displayName || b.email)).map((u) => e('option', { key: u.email, value: u.email }, u.displayName || u.email))
+      ),
+      filtersActive && e('button', {
+        onClick: () => { setBoardSearch(''); setBoardAssignee(''); },
+        style: { fontSize: '0.75rem', padding: '0.375rem 0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' },
+      }, 'Clear filters')
+    );
   }
 
   function promoLabel(promoId) {
@@ -2641,13 +2795,19 @@ function PromotionPlanner({ user }) {
     setEmailForm(null);
   }
 
+  // Shared by the drag-and-drop path below and the mobile status <select> on each card (native
+  // HTML5 drag-and-drop doesn't respond to touch, so phones/tablets need a non-drag way to move
+  // a card between columns).
+  function moveEmailToStatus(email, status) {
+    if (email.status === status) return;
+    if (status === 'Approved' && !isAdmin) { pushToast('Only admins can approve emails.'); return; }
+    moveEmail(email.id, email.subject, status, email.status);
+  }
+
   function handleEmailDrop(status) {
     if (!draggedEmailId) return;
     const email = (emails || []).find((em) => em.id === draggedEmailId);
-    if (email && email.status !== status) {
-      if (status === 'Approved' && !isAdmin) pushToast('Only admins can approve emails.');
-      else moveEmail(email.id, email.subject, status, email.status);
-    }
+    if (email) moveEmailToStatus(email, status);
     setDraggedEmailId(null);
   }
 
@@ -2774,11 +2934,23 @@ function PromotionPlanner({ user }) {
     setTestForm(null);
   }
 
+  // Shared by the drag-and-drop path and the mobile status <select> on each card (see
+  // moveEmailToStatus above for why).
+  function moveTestItemToStatus(config, item, status) {
+    if (item.status === status) return;
+    moveTestItem(config.collection, config.label, item.id, item.name, status, item.status);
+  }
+
   function handleTestDrop(config, items, status) {
     if (!draggedTestId) return;
     const item = (items || []).find((it) => it.id === draggedTestId);
-    if (item && item.status !== status) moveTestItem(config.collection, config.label, item.id, item.name, status, item.status);
+    if (item) moveTestItemToStatus(config, item, status);
     setDraggedTestId(null);
+  }
+
+  function moveTaskToStatus(task, status) {
+    if (!activePromo || task.status === status) return;
+    moveTask(activePromo.id, activePromo.name, task.id, task.title, { team: task.team, status }, task.status);
   }
 
   function handleDrop(team, status) {
@@ -2923,14 +3095,17 @@ function PromotionPlanner({ user }) {
     }
   }
 
-  async function deleteTemplateClick(templateId, templateName) {
-    if (!window.confirm(`Delete the "${templateName}" template? This can't be undone.`)) return;
+  async function performDeleteTemplate(templateId, templateName) {
     try {
       await deleteDoc(doc(fdb, 'promoTemplates', templateId));
       await logActivity({ action: 'template_deleted', promoName: templateName });
     } catch (err) {
       pushToast('Could not delete this template: ' + err.message);
     }
+  }
+
+  function deleteTemplateClick(templateId, templateName) {
+    setPendingConfirm({ message: `Delete the "${templateName}" template? This can't be undone.`, onConfirm: () => performDeleteTemplate(templateId, templateName) });
   }
 
   async function savePromo() {
@@ -3033,11 +3208,7 @@ function PromotionPlanner({ user }) {
   const testHistory = useItemHistory('testId', testForm ? testForm.id : null);
 
   if (!promotions) {
-    return e(
-      'div',
-      { style: { width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' } },
-      e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading board…')
-    );
+    return e(BoardSkeleton, { isMobile });
   }
 
   const daysLeft = activePromo ? daysUntil(activePromo.launchDate) : null;
@@ -3412,7 +3583,7 @@ function PromotionPlanner({ user }) {
       );
 
       function renderCell(team, status, minHeight) {
-        const cellTasks = activePromo.tasks.filter((t) => t.team === team.id && t.status === status);
+        const cellTasks = activePromo.tasks.filter((t) => t.team === team.id && t.status === status && matchesBoardFilter(t.title, t.assignee));
         const cards = cellTasks.map((task) => {
           const type = TYPES.find((t) => t.id === task.type);
           const dim = activeFilters.size > 0 && !activeFilters.has(task.type);
@@ -3436,7 +3607,8 @@ function PromotionPlanner({ user }) {
               e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.assignee || 'Unassigned'),
               e('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, task.due ? formatDate(task.due) : '')
             ),
-            isStale(task.updatedAt, task.status, ['Reports']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(task.updatedAt)}d`)
+            isStale(task.updatedAt, task.status, ['Reports']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(task.updatedAt)}d`),
+            isMobile && canEdit && renderMobileMoveSelect(task.status, STATUSES, (newStatus) => moveTaskToStatus(task, newStatus))
           );
         });
         return e(
@@ -3585,6 +3757,7 @@ function PromotionPlanner({ user }) {
           )
         ),
         taskErrors[activePromo.id] && e('p', { style: { fontSize: '0.8125rem', color: 'var(--danger)', marginBottom: '1rem' } }, `Couldn't load tasks for this promotion: ${taskErrors[activePromo.id]}. What's shown below may be missing cards.`),
+        renderBoardFilterBar(),
         typeFilters,
         board,
         linkedWorkSection,
@@ -4020,12 +4193,13 @@ function PromotionPlanner({ user }) {
         ),
         promo && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `🔗 ${promo.name}`),
         email.approvedBy && e('div', { style: { fontSize: '0.75rem', color: PURPLE_TEXT, marginTop: '0.25rem' } }, `✓ Approved by ${email.approvedBy}`),
-        isStale(email.updatedAt, email.status, ['Sent', 'Reported']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(email.updatedAt)}d`)
+        isStale(email.updatedAt, email.status, ['Sent', 'Reported']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(email.updatedAt)}d`),
+        isMobile && canEdit && renderMobileMoveSelect(email.status, EMAIL_STATUSES, (newStatus) => moveEmailToStatus(email, newStatus), (s) => s === 'Approved' && !isAdmin)
       );
     }
 
     function renderEmailColumn(status, minHeight) {
-      const items = (emails || []).filter((em) => em.status === status);
+      const items = (emails || []).filter((em) => em.status === status && matchesBoardFilter(em.subject, em.assignee));
       return e(
         'div',
         {
@@ -4146,10 +4320,11 @@ function PromotionPlanner({ user }) {
           canEdit && e('button', { onClick: () => openNewEmail(EMAIL_STATUSES[0], ''), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New email')
         )
       ),
-      !emails && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)' } }, 'Loading…'),
+      !emails && e(ColumnsSkeleton, { count: 6, isMobile }),
+      emails && emailView === 'board' && renderBoardFilterBar(),
       emails && emailView === 'board' && emailBoard,
       emails && emailView === 'calendar' && emailCalendar,
-      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap an email to edit it, or a day to add one." : "Drag cards between columns, click a card to edit it, click a day on the calendar to add one, or drag a chip to a new day to reschedule it.")
+      e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap an email to edit it, use the status menu on a card to move it, or tap a day to add one." : "Drag cards between columns, click a card to edit it, click a day on the calendar to add one, or drag a chip to a new day to reschedule it.")
     );
   }
 
@@ -4185,12 +4360,13 @@ function PromotionPlanner({ user }) {
             color: item.outcome === 'Win' ? 'var(--success)' : item.outcome === 'Loss' ? 'var(--danger)' : 'var(--text-secondary)',
           },
         }, item.outcome),
-        isStale(item.updatedAt, item.status, ['Concluded']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(item.updatedAt)}d`)
+        isStale(item.updatedAt, item.status, ['Concluded']) && e('div', { style: { fontSize: '0.6875rem', color: 'var(--warn-text)', marginTop: '0.25rem' } }, `⏱ Stale — no update in ${daysSince(item.updatedAt)}d`),
+        isMobile && canEdit && renderMobileMoveSelect(item.status, config.statuses, (newStatus) => moveTestItemToStatus(config, item, newStatus))
       );
     }
 
     function renderTestColumn(status, minHeight) {
-      const colItems = (items || []).filter((it) => it.status === status);
+      const colItems = (items || []).filter((it) => it.status === status && matchesBoardFilter(it.name, it.assignee));
       return e(
         'div',
         {
@@ -4253,9 +4429,10 @@ function PromotionPlanner({ user }) {
           canEdit && e('button', { onClick: () => openNewTest(config), style: { padding: '0.5rem 1rem', borderRadius: '0.5rem', color: 'var(--on-accent)', background: PURPLE, fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer' } }, '+ New test')
         )
       ),
-      !items && e('p', { style: { fontSize: '0.875rem', color: 'var(--text-muted)', padding: subView === 'timeline' ? (isMobile ? '0 1rem' : '0 2rem') : undefined } }, 'Loading…'),
+      !items && e('div', { style: { padding: subView === 'timeline' ? (isMobile ? '0 1rem' : '0 2rem') : undefined } }, e(ColumnsSkeleton, { count: config.statuses.length, isMobile })),
+      items && subView === 'board' && renderBoardFilterBar(),
       items && subView === 'board' && testBoard,
-      items && subView === 'board' && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap a test to edit it." : "Drag cards between columns, or click one to edit it."),
+      items && subView === 'board' && e('p', { style: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1.5rem' } }, isMobile ? "Tap a test to edit it, or use the status menu on a card to move it." : "Drag cards between columns, or click one to edit it."),
       items && subView === 'timeline' && testTimeline
     );
   }
@@ -4298,7 +4475,7 @@ function PromotionPlanner({ user }) {
             { style: { display: 'flex', gap: '0.75rem', flexShrink: 0 } },
             e('button', { onClick: it.restore, style: { fontSize: '0.8125rem', color: PURPLE_TEXT, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', padding: 0 } }, 'Restore'),
             e('button', {
-              onClick: () => { if (window.confirm(`Permanently delete "${it.title}"? This can't be undone.`)) it.purge(); },
+              onClick: () => setPendingConfirm({ message: `Permanently delete "${it.title}"? This can't be undone.`, onConfirm: it.purge, confirmLabel: 'Delete forever' }),
               style: { fontSize: '0.8125rem', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 },
             }, 'Delete forever')
           )
@@ -4580,6 +4757,7 @@ function PromotionPlanner({ user }) {
     emailModalEl,
     testModalEl,
     templatesModalOpen && e(TemplatesModal, { templates: promoTemplates || [], onClose: () => setTemplatesModalOpen(false), onRename: renameTemplateClick, onDelete: deleteTemplateClick, canEdit }),
+    e(ConfirmModal, { pending: pendingConfirm, onCancel: () => setPendingConfirm(null) }),
     e(ToastStack, { toasts, onDismiss: dismissToast })
   );
 }

@@ -66,6 +66,21 @@ roles are set.
   - **Acquisition** — Paid Media Tests: a status board and a timeline.
   - **Retention** — Emails: a status board and a month calendar.
   - **Website** — CRO/UX Tests: a status board and a timeline.
+  Each team board's status columns have a **search box and an assignee
+  filter** above them, narrowing the cards shown to a name/title match
+  and/or a specific person — handy once a board has enough cards that
+  scanning every column for one thing (or one person's work) gets
+  tedious. It resets when you switch boards rather than carrying a stale
+  filter from one team's board onto another's.
+
+  Moving a card between statuses is normally drag-and-drop, which
+  doesn't work with touch — so on mobile, every card also has a small
+  **status dropdown** right on it as a drag-free alternative; picking a
+  new value moves it exactly like a drop would (including the
+  Admin-only rule on approving an email, shown as a disabled "Approved
+  (admin only)" option for anyone else). It only appears for people who
+  can actually edit the board — a Viewer's cards don't get one, same as
+  they don't get drag-and-drop.
 - **Activity** — a live change log across everything above, plus a
   **Recently Deleted** sub-view for restoring (or permanently deleting)
   anything soft-deleted — see below.
@@ -164,7 +179,18 @@ work.
 When something goes wrong (a save fails, a required field is missing), it
 shows up as a small dismissible notification in the bottom corner rather
 than a blocking browser alert — same information, just doesn't freeze the
-tab while you read it.
+tab while you read it. Anything destructive and hard to undo — revoking
+someone's access, deleting a template, a comment, or a Recently Deleted
+item for good — asks first with the app's own styled confirmation dialog
+rather than the browser's native `confirm()` popup, so it matches the rest
+of the app (and the current theme) instead of looking like a jarring
+system prompt dropped on top of it.
+
+The first time the board loads (or whenever a team board's data is still
+coming in), you see a lightweight **skeleton** shaped like the layout
+that's about to appear — sidebar and board columns, not just a bare
+"Loading…" — so the page reads as "still drawing itself" rather than a
+blank or broken screen.
 
 ## Live board
 
